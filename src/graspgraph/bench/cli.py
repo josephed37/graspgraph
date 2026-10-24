@@ -36,6 +36,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--think", action=argparse.BooleanOptionalAction, default=False, help="Ollama thinking mode (default: off)"
     )
     parser.add_argument("--max-tokens", type=int, default=1024, help="Anthropic max output tokens")
+    parser.add_argument("--temperature", type=float, help="sampling temperature (default: the provider's own)")
     parser.add_argument("--max-usd", type=float, default=1.00, help="stop before spend would exceed this (default 1.00)")
     parser.add_argument("--ollama-url", help="Ollama server URL (default: http://localhost:11434)")
     parser.add_argument("--out", type=Path, help="JSONL output; default results/<backend>-<model>_<mode>.jsonl")
@@ -52,7 +53,10 @@ def main(argv: list[str] | None = None) -> None:
         else:
             tasks = build_suite(None if args.families == ["all"] else args.families)
         price = price_for(load_prices(), args.backend, model)
-        backend = make_backend(args.backend, model, think=args.think, max_tokens=args.max_tokens, ollama_url=args.ollama_url)
+        backend = make_backend(
+            args.backend, model, think=args.think, max_tokens=args.max_tokens, ollama_url=args.ollama_url,
+            temperature=args.temperature,
+        )
     except ValueError as exc:
         sys.exit(f"graspgraph-bench: {exc}")
     if args.limit is not None:

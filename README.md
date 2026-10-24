@@ -112,7 +112,7 @@ uv run graspgraph-bench --backend fake --model oracle
 uv run python scripts/summarize.py results/*.jsonl
 ```
 
-Other options: `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (Anthropic, default 1024), `--ollama-url`.
+Other options: `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (Anthropic, default 1024), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
 
 - **Output**: one JSON line per task run, with success, `outcome_type`, the tool calls, every primitive result, tokens, `cost_usd` and model latency. The outcome types are `success`, `wrong_object`, `bad_placement`, `primitive_failed`, `no_tool_calls`, `hallucinated_object`, `asked_correctly`, `refused_correctly`, `should_have_asked`, `should_have_refused`, `should_have_acted`, `acted_when_should_not` and `llm_error`.
 - **Resume**: rerunning with the same `--out` skips runs already recorded, so a crashed run continues where it stopped. Runs that hit an `llm_error` are retried.

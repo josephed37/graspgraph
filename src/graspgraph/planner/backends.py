@@ -52,19 +52,28 @@ def ollama_backend(
     think: bool = False,
     base_url: str | None = None,
     num_ctx: int = 8192,
+    temperature: float | None = None,
 ) -> ChatModelBackend:
-    """A local Ollama model. `think` is Ollama's thinking toggle (passed as `reasoning`)."""
+    """A local Ollama model. `think` is Ollama's thinking toggle (passed as `reasoning`).
+
+    `temperature` None keeps the model's default sampling, so repeated runs measure variance.
+    """
     from langchain_ollama import ChatOllama
 
-    chat = ChatOllama(model=model, reasoning=think, temperature=0.0, num_ctx=num_ctx, base_url=base_url)
+    chat = ChatOllama(model=model, reasoning=think, temperature=temperature, num_ctx=num_ctx, base_url=base_url)
     return ChatModelBackend(chat, "ollama", model, think)
 
 
-def anthropic_backend(model: str = DEFAULT_MODELS["anthropic"], max_tokens: int = 1024) -> ChatModelBackend:
-    """A Claude model. Reads ANTHROPIC_API_KEY from the environment; extended thinking stays off."""
+def anthropic_backend(
+    model: str = DEFAULT_MODELS["anthropic"], max_tokens: int = 1024, temperature: float | None = None
+) -> ChatModelBackend:
+    """A Claude model. Reads ANTHROPIC_API_KEY from the environment; extended thinking stays off.
+
+    `temperature` None keeps the API's default sampling.
+    """
     from langchain_anthropic import ChatAnthropic
 
-    chat = ChatAnthropic(model=model, max_tokens=max_tokens, temperature=0.0)
+    chat = ChatAnthropic(model=model, max_tokens=max_tokens, temperature=temperature)
     return ChatModelBackend(chat, "anthropic", model, None)
 
 
@@ -131,14 +140,19 @@ FAKE_POLICIES: dict[str, Policy] = {
 
 
 def make_backend(
-    backend: str, model: str | None = None, think: bool = False, max_tokens: int = 1024, ollama_url: str | None = None
+    backend: str,
+    model: str | None = None,
+    think: bool = False,
+    max_tokens: int = 1024,
+    ollama_url: str | None = None,
+    temperature: float | None = None,
 ) -> PlannerBackend:
     """Build a backend by name: "ollama", "anthropic" or "fake" (model = a FAKE_POLICIES key)."""
     model = model or DEFAULT_MODELS[backend]
     if backend == "ollama":
-        return ollama_backend(model, think=think, base_url=ollama_url)
+        return ollama_backend(model, think=think, base_url=ollama_url, temperature=temperature)
     if backend == "anthropic":
-        return anthropic_backend(model, max_tokens=max_tokens)
+        return anthropic_backend(model, max_tokens=max_tokens, temperature=temperature)
     if backend == "fake":
         if model not in FAKE_POLICIES:
             raise ValueError(f"unknown fake policy '{model}'; choose from {list(FAKE_POLICIES)}")
