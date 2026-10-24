@@ -30,3 +30,5 @@ packages = ["src/graspgraph"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long-running checks (full oracle validation); run with `pytest -m slow`"]
+addopts = "-m 'not slow'"
