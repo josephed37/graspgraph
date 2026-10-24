@@ -108,6 +108,10 @@ def _step_call(raw: Any) -> ToolCall | None:
     return ToolCall(name, {k: v for k, v in raw.items() if k not in ("tool", "name")})  # args flattened in
 
 
+def _is_step_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def extract_plan(calls: list[ToolCall], protocol: PlanProtocol, object_names: list[str]) -> Plan:
     """The plan in a parsed response. `calls` must be non-empty."""
     names = set(object_names)
@@ -128,7 +132,11 @@ def extract_plan(calls: list[ToolCall], protocol: PlanProtocol, object_names: li
             raw_steps = json.loads(raw_steps)
         except json.JSONDecodeError:
             pass
-    plan = Plan(steps=[], raw=raw_steps, planned_steps=len(raw_steps) if isinstance(raw_steps, list) else 0)
+    plan = Plan(steps=[], raw=raw_steps, planned_steps=0)
+    if isinstance(raw_steps, list):
+        # Some models number their steps inline, e.g. [1, {step}, 2, {step}]: drop the bare numbers.
+        raw_steps = [s for s in raw_steps if not _is_step_number(s)]
+        plan.planned_steps = len(raw_steps)
     if not isinstance(raw_steps, list) or not raw_steps:
         return _reject(plan, [("submit_plan needs a non-empty list of steps", "invalid_plan")])
     parsed = [_step_call(s) for s in raw_steps]

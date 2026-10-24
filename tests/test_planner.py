@@ -110,6 +110,16 @@ def test_submit_plan_steps_are_read_defensively():
     ]
 
 
+def test_inline_step_numbers_are_skipped():
+    # Gemma's spatial-006 plan: correct steps, numbered inline.
+    raw = [1, {"args": {"obj_name": "block_red"}, "tool": "pick"}, 2, {"args": {"x": 0.62, "y": -0.25}, "tool": "place_at"}, 3,
+           {"args": {}, "tool": "move_home"}]
+    plan = extract_plan([ToolCall("submit_plan", {"steps": raw})], "submit_plan", NAMES)
+    assert plan.error is None and plan.planned_steps == 3 and plan.raw == raw
+    assert [s.name for s in plan.steps] == ["pick", "place_at", "move_home"]
+    assert extract_plan([_submit(1, 2)], "submit_plan", NAMES).error  # nothing but numbers is still empty
+
+
 def test_steps_as_a_json_string_and_single_ask_are_accepted():
     steps = json.dumps([{"tool": "pick", "args": {"obj_name": "block_red"}}])
     assert extract_plan([_submit()], "submit_plan", NAMES).error  # empty plan
