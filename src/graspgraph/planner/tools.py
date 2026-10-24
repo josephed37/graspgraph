@@ -57,18 +57,26 @@ def multi_call_schemas(object_names: list[str]) -> list[dict[str, Any]]:
 def submit_plan_schemas(object_names: list[str]) -> list[dict[str, Any]]:
     """submit_plan (the whole plan as an ordered list of steps) plus ask/refuse."""
     params = _params(object_names)
-    step_args = {**params["pick"], **params["place_at"]}  # obj_name, x, y: which ones depends on the tool
+    # One schema per robot action, so each tool offers exactly its own arguments (a flat schema
+    # listing obj_name, x and y together led Gemma to send place_at an obj_name).
     step = {
-        "type": "object",
-        "properties": {
-            "tool": {"type": "string", "enum": list(MOTION_TOOLS)},
-            "args": {
+        "anyOf": [
+            {
                 "type": "object",
-                "properties": step_args,
-                "description": "pick/place_on: {obj_name}; place_at: {x, y}; move_home: {}",
-            },
-        },
-        "required": ["tool", "args"],
+                "description": DESCRIPTIONS[name],
+                "properties": {
+                    "tool": {"type": "string", "enum": [name]},
+                    "args": {
+                        "type": "object",
+                        "properties": params[name],
+                        "required": list(MOTION_TOOLS[name]),
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["tool", "args"],
+            }
+            for name in MOTION_TOOLS
+        ]
     }
     submit = _function(
         SUBMIT_PLAN,

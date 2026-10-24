@@ -18,13 +18,13 @@ import langsmith
 
 from graspgraph.bench.pricing import Price
 from graspgraph.bench.scoring import SUCCESSES, classify
-from graspgraph.planner.backends import PlannerBackend
+from graspgraph.planner.backends import PlannerBackend, is_model_failure
 from graspgraph.planner.graph import run_open_loop
 from graspgraph.planner.plans import PlanProtocol
 from graspgraph.planner.prompts import PROMPT_VERSIONS
 from graspgraph.tasks import Task, start_episode
 
-KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "mode", "plan_protocol")
+KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "mode", "plan_protocol", "prompt_version")
 # Records written before plan_protocol existed all used the original one-call-per-step protocol.
 LEGACY_DEFAULTS = {"plan_protocol": "multi_call"}
 MAX_RESPONSE_CHARS = 2000  # keep a model's prose (useful for no_tool_calls) without bloating logs
@@ -98,6 +98,12 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _retryable(record: dict[str, Any]) -> bool:
+    """Only transient failures are re-run. Older files logged repetition loops as llm_error,
+    so those are recognised by their error text."""
+    return record.get("outcome_type") == "llm_error" and not is_model_failure(record.get("error") or "")
+
+
 @dataclass
 class BenchReport:
     ran: int
@@ -119,12 +125,13 @@ def run_benchmark(
 ) -> BenchReport:
     """Run every (task, repeat) not yet recorded in `out`, appending one JSON line each.
 
-    Runs that ended in an llm_error are retried on resume. Before each run the cap is
-    checked against the money already spent plus the most expensive run so far, so the
-    run stops before it would cross `max_usd`.
+    Runs that ended in an llm_error (network or API trouble) are retried on resume. Model
+    failures such as degenerate_output are not, so a rerun gives no task extra attempts.
+    Before each run the cap is checked against the money already spent plus the most
+    expensive run so far, so the run stops before it would cross `max_usd`.
     """
     existing = read_records(out)
-    done = {run_key(r) for r in existing if r.get("outcome_type") != "llm_error"}
+    done = {run_key(r) for r in existing if not _retryable(r)}
     spent = sum(r.get("cost_usd") or 0.0 for r in existing)
     worst = max((r.get("cost_usd") or 0.0 for r in existing), default=0.0)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -137,7 +144,8 @@ def run_benchmark(
     with langsmith.tracing_context(enabled=tracing_enabled()), out.open("a") as f:
         for repeat in range(repeats):
             for task in tasks:
-                key = (task.task_id, repeat, backend.backend, backend.model, backend.think, mode, protocol)
+                config = (backend.backend, backend.model, backend.think, mode, protocol, PROMPT_VERSIONS[protocol])
+                key = (task.task_id, repeat, *config)
                 if key in done:
                     skipped += 1
                     continue

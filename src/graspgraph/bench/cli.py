@@ -15,7 +15,7 @@ from pathlib import Path
 
 from graspgraph.bench.pricing import load_prices, price_for
 from graspgraph.bench.runner import run_benchmark, tracing_enabled
-from graspgraph.planner.backends import DEFAULT_MODELS, FAKE_POLICIES, make_backend
+from graspgraph.planner.backends import DEFAULT_MAX_TOKENS, DEFAULT_MODELS, FAKE_POLICIES, make_backend
 from graspgraph.planner.plans import PLAN_PROTOCOLS
 from graspgraph.tasks import FAMILY_NAMES, build_suite, get_task
 
@@ -43,7 +43,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--think", action=argparse.BooleanOptionalAction, default=False, help="Ollama thinking mode (default: off)"
     )
-    parser.add_argument("--max-tokens", type=int, default=1024, help="Anthropic max output tokens")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        help=f"max output tokens (Ollama: num_predict, thinking included); defaults: {DEFAULT_MAX_TOKENS}",
+    )
     parser.add_argument("--temperature", type=float, help="sampling temperature (default: the provider's own)")
     parser.add_argument("--max-usd", type=float, default=1.00, help="stop before spend would exceed this (default 1.00)")
     parser.add_argument("--ollama-url", help="Ollama server URL (default: http://localhost:11434)")

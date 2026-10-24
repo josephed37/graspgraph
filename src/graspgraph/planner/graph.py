@@ -16,14 +16,14 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, START, StateGraph
 
 from graspgraph.actions import ASK, STOP_TOOLS, ToolCall, execute
-from graspgraph.planner.backends import PlannerBackend
+from graspgraph.planner.backends import PlannerBackend, is_model_failure
 from graspgraph.planner.parsing import parse_tool_calls
 from graspgraph.planner.plans import Plan, PlanErrorKind, PlanProtocol, extract_plan
 from graspgraph.planner.prompts import SYSTEM_PROMPTS, build_user_message
 from graspgraph.planner.tools import tool_schemas
 from graspgraph.tasks import Episode
 
-StopReason = Literal["completed", "asked", "refused", "no_tool_calls", "invalid_plan", "llm_error"]
+StopReason = Literal["completed", "asked", "refused", "no_tool_calls", "invalid_plan", "degenerate_output", "llm_error"]
 
 
 class PlannerState(TypedDict, total=False):
@@ -35,6 +35,7 @@ class PlannerState(TypedDict, total=False):
     results: list[dict[str, Any]]
     stop: StopReason
     error: str
+    model_failed: bool  # the error was the model's own (e.g. a repetition loop), not the connection
 
 
 @dataclass
@@ -72,12 +73,12 @@ def build_open_loop_graph(backend: PlannerBackend, episode: Episode, protocol: P
             response = backend.generate(state["messages"], tool_schemas(object_names, protocol))
         except Exception as exc:  # network, API or parsing errors inside the model client
             failed = {"response": AIMessage(""), "tool_calls": [], "error": f"{type(exc).__name__}: {exc}"}
-            return {**failed, "latency_s": time.perf_counter() - start}
+            return {**failed, "model_failed": is_model_failure(exc), "latency_s": time.perf_counter() - start}
         return {"response": response, "latency_s": time.perf_counter() - start, "tool_calls": parse_tool_calls(response)}
 
     def validate(state: PlannerState) -> PlannerState:
         if state.get("error"):
-            return {"results": [], "stop": "llm_error"}
+            return {"results": [], "stop": "degenerate_output" if state.get("model_failed") else "llm_error"}
         if not state["tool_calls"]:
             return {"results": [], "stop": "no_tool_calls"}
         checked = extract_plan(state["tool_calls"], protocol, object_names)

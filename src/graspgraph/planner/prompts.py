@@ -10,7 +10,14 @@ from graspgraph.sim.scene import TABLE_X, TABLE_Y
 from graspgraph.tasks.regions import describe_regions
 
 # One version per protocol, written into every benchmark record. Bump when wording changes.
-PROMPT_VERSIONS: dict[PlanProtocol, str] = {"multi_call": "open-v1", "submit_plan": "open-v2-submit-plan"}
+# v3 (both protocols): the move history now says what "from" and "to" mean and how to undo.
+PROMPT_VERSIONS: dict[PlanProtocol, str] = {"multi_call": "open-v3-multi-call", "submit_plan": "open-v3-submit-plan"}
+
+HISTORY_INTRO = (
+    "Moves made so far, oldest first. Each move names the block that moved, where it was before the move "
+    '("from") and where it ended up ("to"), as [x, y, z] in metres. To undo a move, pick that block up and '
+    'place_at the x and y of its "from" position.'
+)
 
 _WORLD = f"""\
 You control a Franka Panda robot arm that moves coloured blocks on a table. You write the plan; the robot runs it.
@@ -40,7 +47,7 @@ _DECIDE = """\
 - Otherwise do not ask or refuse: plan the moves.
 """
 
-# The original protocol (prompt "open-v1", unchanged): one tool call per step.
+# The original protocol: one tool call per step.
 MULTI_CALL_SYSTEM_PROMPT = (
     _WORLD
     + "\nTools\n"
@@ -87,5 +94,5 @@ def build_user_message(instruction: str, scene: dict[str, Any], history: list[di
         json.dumps(scene, indent=1),
     ]
     if history:
-        parts += ["Moves made so far, oldest first:", json.dumps(history, indent=1)]
+        parts += [HISTORY_INTRO, json.dumps(history, indent=1)]
     return "\n\n".join(parts)

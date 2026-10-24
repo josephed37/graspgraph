@@ -19,6 +19,20 @@ from graspgraph.tasks import Task
 
 DEFAULT_MODELS = {"ollama": "gemma4:12b", "anthropic": "claude-haiku-5-5", "fake": "oracle"}
 
+# Output-token caps when --max-tokens is not given. A plan needs a few hundred tokens; the cap
+# stops a model stuck repeating itself within a minute or two. Ollama counts thinking tokens
+# against the cap, so thinking runs get more room.
+DEFAULT_MAX_TOKENS = {"anthropic": 1024, "ollama": 2048, "ollama_think": 8192}
+
+# Errors that mean the model itself failed (it was generating), not the connection or server.
+# Ollama aborts a response when the model loops on the same tokens.
+MODEL_FAILURE_MARKERS = ("token repeat limit",)
+
+
+def is_model_failure(error: Exception | str) -> bool:
+    """Whether an error from a model call is the model's own failure (not worth retrying)."""
+    return any(marker in str(error).lower() for marker in MODEL_FAILURE_MARKERS)
+
 
 class PlannerBackend(ABC):
     """A model that turns a prompt into tool calls."""
@@ -53,19 +67,32 @@ def ollama_backend(
     base_url: str | None = None,
     num_ctx: int = 8192,
     temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> ChatModelBackend:
     """A local Ollama model. `think` is Ollama's thinking toggle (passed as `reasoning`).
 
     `temperature` None keeps the model's default sampling, so repeated runs measure variance.
+    `max_tokens` caps the output (Ollama's num_predict, thinking included).
     """
     from langchain_ollama import ChatOllama
 
-    chat = ChatOllama(model=model, reasoning=think, temperature=temperature, num_ctx=num_ctx, base_url=base_url)
+    if max_tokens is None:
+        max_tokens = DEFAULT_MAX_TOKENS["ollama_think" if think else "ollama"]
+    chat = ChatOllama(
+        model=model,
+        reasoning=think,
+        temperature=temperature,
+        num_ctx=num_ctx,
+        num_predict=max_tokens,
+        base_url=base_url,
+    )
     return ChatModelBackend(chat, "ollama", model, think)
 
 
 def anthropic_backend(
-    model: str = DEFAULT_MODELS["anthropic"], max_tokens: int = 1024, temperature: float | None = None
+    model: str = DEFAULT_MODELS["anthropic"],
+    max_tokens: int = DEFAULT_MAX_TOKENS["anthropic"],
+    temperature: float | None = None,
 ) -> ChatModelBackend:
     """A Claude model. Reads ANTHROPIC_API_KEY from the environment; extended thinking stays off.
 
@@ -164,16 +191,19 @@ def make_backend(
     backend: str,
     model: str | None = None,
     think: bool = False,
-    max_tokens: int = 1024,
+    max_tokens: int | None = None,
     ollama_url: str | None = None,
     temperature: float | None = None,
 ) -> PlannerBackend:
-    """Build a backend by name: "ollama", "anthropic" or "fake" (model = a FAKE_POLICIES key)."""
+    """Build a backend by name: "ollama", "anthropic" or "fake" (model = a FAKE_POLICIES key).
+
+    `max_tokens` None uses DEFAULT_MAX_TOKENS for the backend.
+    """
     model = model or DEFAULT_MODELS[backend]
     if backend == "ollama":
-        return ollama_backend(model, think=think, base_url=ollama_url, temperature=temperature)
+        return ollama_backend(model, think=think, base_url=ollama_url, temperature=temperature, max_tokens=max_tokens)
     if backend == "anthropic":
-        return anthropic_backend(model, max_tokens=max_tokens, temperature=temperature)
+        return anthropic_backend(model, max_tokens=max_tokens or DEFAULT_MAX_TOKENS["anthropic"], temperature=temperature)
     if backend == "fake":
         if model not in FAKE_POLICIES:
             raise ValueError(f"unknown fake policy '{model}'; choose from {list(FAKE_POLICIES)}")

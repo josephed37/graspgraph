@@ -8,7 +8,7 @@ from graspgraph.planner import FakeBackend, run_open_loop
 from graspgraph.planner.backends import PlannerBackend
 from graspgraph.planner.parsing import parse_tool_calls
 from graspgraph.planner.plans import extract_plan
-from graspgraph.planner.prompts import PROMPT_VERSIONS, SYSTEM_PROMPTS, build_user_message
+from graspgraph.planner.prompts import HISTORY_INTRO, PROMPT_VERSIONS, SYSTEM_PROMPTS, build_user_message
 from graspgraph.planner.tools import tool_schemas
 from graspgraph.tasks import get_task, start_episode
 from graspgraph.tasks.regions import REGIONS
@@ -41,9 +41,14 @@ def test_tool_schema_object_enums_match_the_scene():
 
         submit = {s["function"]["name"]: s["function"] for s in tool_schemas(names, "submit_plan")}
         assert set(submit) == {"submit_plan", "ask_clarification", "refuse"}
-        step = submit["submit_plan"]["parameters"]["properties"]["steps"]["items"]
-        assert step["properties"]["tool"]["enum"] == list(MOTION_TOOLS)
-        assert step["properties"]["args"]["properties"]["obj_name"]["enum"] == names
+        variants = submit["submit_plan"]["parameters"]["properties"]["steps"]["items"]["anyOf"]
+        by_tool = {v["properties"]["tool"]["enum"][0]: v["properties"]["args"] for v in variants}
+        assert list(by_tool) == list(MOTION_TOOLS)
+        for tool, args in by_tool.items():  # each tool offers exactly its own arguments
+            assert list(args["properties"]) == list(MOTION_TOOLS[tool]) == args["required"]
+            assert args["additionalProperties"] is False
+        for tool in ("pick", "place_on"):
+            assert by_tool[tool]["properties"]["obj_name"]["enum"] == names
 
 
 def test_parse_tool_calls_accepts_dicts_strings_and_wrappers():
@@ -69,8 +74,9 @@ def test_prompts_carry_instruction_scene_history_and_regions():
     user = build_user_message(episode.task.instruction, episode.robot.get_scene(), episode.history)
     assert episode.task.instruction in user
     assert json.dumps(episode.robot.get_scene(), indent=1) in user
-    assert "Moves made so far" in user and episode.history[-1]["block"] in user
-    assert "Moves made so far" not in build_user_message("Stack them.", episode.robot.get_scene(), [])
+    assert HISTORY_INTRO in user and episode.history[-1]["block"] in user
+    assert '"from"' in HISTORY_INTRO and "undo" in HISTORY_INTRO
+    assert HISTORY_INTRO not in build_user_message("Stack them.", episode.robot.get_scene(), [])
     for protocol, prompt in SYSTEM_PROMPTS.items():
         assert all(region.label in prompt for region in REGIONS.values())
         assert PROMPT_VERSIONS[protocol]

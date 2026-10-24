@@ -34,14 +34,14 @@ def test_oracle_fake_scores_100_percent_one_task_per_family(protocol):
 def test_records_hold_the_planned_step_count_and_raw_plan():
     task = _first("tower")
     record = run_task(task, make_backend("fake", "oracle"), FREE)
-    assert record["plan_protocol"] == "submit_plan" and record["prompt_version"] == "open-v2-submit-plan"
+    assert record["plan_protocol"] == "submit_plan" and record["prompt_version"] == "open-v3-submit-plan"
     assert record["planned_steps"] == 4
     assert record["raw_plan"] == [{"tool": c.name, "args": c.args} for c in task.oracle]
     assert [c["name"] for c in record["tool_calls"]] == ["submit_plan"]
     assert record["plan_error"] is None
 
     legacy = run_task(task, make_backend("fake", "oracle"), FREE, protocol="multi_call")
-    assert legacy["prompt_version"] == "open-v1" and legacy["planned_steps"] == 4
+    assert legacy["prompt_version"] == "open-v3-multi-call" and legacy["planned_steps"] == 4
     assert legacy["raw_plan"] == [c.to_dict() for c in task.oracle]
 
     bad = run_task(task, _scripted([ToolCall("pick", {})]), FREE)
@@ -65,6 +65,13 @@ def _wrong_tower(task):
 
 def _broken(task):
     raise ConnectionError("model server unreachable")
+
+
+REPEAT_LOOP = "ResponseError: prediction aborted, token repeat limit reached (status code: 500)"
+
+
+def _looping(task):
+    raise RuntimeError(REPEAT_LOOP)
 
 
 # (expected outcome_type, task id, policy: task -> planned steps, protocol)
@@ -97,6 +104,7 @@ LABEL_CASES = [
     ("should_have_refused", "impossible-000", lambda t: [ToolCall("ask_clarification", {"question": "?"})], "submit_plan"),
     ("should_have_acted", "stack-000", lambda t: [ToolCall("ask_clarification", {"question": "Sure?"})], "submit_plan"),
     ("llm_error", "stack-000", _broken, "submit_plan"),
+    ("degenerate_output", "stack-000", _looping, "submit_plan"),
 ]
 
 
@@ -210,3 +218,35 @@ def test_cli_plan_protocol_flag(tmp_path, monkeypatch, capsys):
     [record] = read_records(tmp_path / "results" / "fake-oracle_open_submit_plan.jsonl")
     assert (record["plan_protocol"], record["success"]) == ("submit_plan", True)
     assert "mean planned steps 4.0" in summarize(tmp_path / "results" / "fake-oracle_open_submit_plan.jsonl")
+
+
+def test_repetition_loops_are_model_failures_and_not_retried(tmp_path):
+    out = tmp_path / "r.jsonl"
+    looping = FakeBackend(_looping, model="oracle")
+    run_benchmark(TASKS[:2], looping, out, FREE, log=lambda _: None)
+    assert [r["outcome_type"] for r in read_records(out)] == ["degenerate_output"] * 2
+    # Files written before degenerate_output existed logged loops as llm_error; those are not retried either.
+    records = read_records(out)
+    records[1]["outcome_type"] = "llm_error"
+    out.write_text("".join(json.dumps(r) + "\n" for r in records))
+    report = run_benchmark(TASKS[:2], make_backend("fake", "oracle"), out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (0, 2)
+
+
+def test_a_new_prompt_version_is_not_skipped_on_resume(tmp_path):
+    out = tmp_path / "r.jsonl"
+    backend = make_backend("fake", "oracle")
+    run_benchmark(TASKS[:1], backend, out, FREE, log=lambda _: None)
+    [record] = read_records(out)
+    record["prompt_version"] = "open-v2-submit-plan"  # a run made with the previous prompt
+    out.write_text(json.dumps(record) + "\n")
+    report = run_benchmark(TASKS[:1], backend, out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (1, 0)
+    table = summarize(out)  # one table per configuration, never averaged together
+    assert table.count("== ") == 2 and "prompt_version=open-v2-submit-plan" in table and "prompt_version=open-v3-submit-plan" in table
+
+
+def test_ollama_output_is_capped():
+    assert make_backend("ollama").chat_model.num_predict == 2048
+    assert make_backend("ollama", think=True).chat_model.num_predict == 8192  # thinking counts against the cap
+    assert make_backend("ollama", max_tokens=500).chat_model.num_predict == 500

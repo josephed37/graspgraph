@@ -24,7 +24,8 @@ OutcomeType = Literal[
     "should_have_refused",
     "should_have_acted",  # asked or refused on a task that just needed doing
     "acted_when_should_not",
-    "llm_error",  # the model call itself failed (network, API error, bad response)
+    "degenerate_output",  # the model got stuck (e.g. repeating itself) and the server aborted it
+    "llm_error",  # the model call failed for another reason (network, API error); retried on resume
 ]
 SUCCESSES = {"success", "asked_correctly", "refused_correctly"}
 PLACING = ("place_on", "place_at")
@@ -48,8 +49,8 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
     only referred objects but left some out, placed fewer blocks than the task needs, or
     ended still holding a block is incomplete_plan; anything else is bad_placement.
     """
-    if run.stop == "llm_error":
-        return "llm_error"
+    if run.stop in ("llm_error", "degenerate_output"):
+        return run.stop
     if run.stop == "no_tool_calls":
         return "no_tool_calls"
     if run.stop == "invalid_plan":
