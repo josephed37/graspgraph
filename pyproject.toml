@@ -11,7 +11,11 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "imageio>=2.38.1",
+    "imageio-ffmpeg>=0.6.0",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]
