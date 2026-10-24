@@ -27,6 +27,9 @@ class Task:
     predicate: Predicate  # checked on the final simulator state
     oracle: tuple[ToolCall, ...]  # a correct plan, proving the task is solvable
     setup: tuple[ToolCall, ...] = ()  # run before the planner starts (e.g. the move to undo)
+    # Object kind whose members are interchangeable when scoring (e.g. "block" for "put two
+    # blocks in each bowl"): using different ones than the oracle is not a wrong object.
+    interchangeable: str | None = None
 
 
 @dataclass

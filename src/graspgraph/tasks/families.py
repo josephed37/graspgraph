@@ -63,6 +63,7 @@ class Draft:
     oracle: tuple[ToolCall, ...]
     expected_outcome: ExpectedOutcome = "act"
     setup: tuple[ToolCall, ...] = ()
+    interchangeable: str | None = None
 
 
 Builder = Callable[[SceneView, np.random.Generator], Draft | None]
@@ -110,6 +111,7 @@ def _generate(family: str, seed: int, n_blocks: int, n_bowls: int, build: Builde
             predicate=draft.predicate,
             oracle=draft.oracle,
             setup=draft.setup,
+            interchangeable=draft.interchangeable,
         )
     raise RuntimeError(f"no suitable scene for {family} seed {seed} in {MAX_SCENE_ATTEMPTS} attempts")
 
@@ -289,7 +291,7 @@ def count(seed: int) -> Task:
                 remaining.remove(block)
                 oracle += _pick_place(block, bowl)
         text = _pick(rng, templates).format(n=["one", "two"][per_bowl - 1], blocks="block" if per_bowl == 1 else "blocks")
-        return Draft(text, BowlCounts(tuple((w, per_bowl) for w in view.bowls)), tuple(oracle))
+        return Draft(text, BowlCounts(tuple((w, per_bowl) for w in view.bowls)), tuple(oracle), interchangeable="block")
 
     return _generate("count", seed, 2 * per_bowl + (1 if per_bowl == 1 else 0), 2, build)
 
