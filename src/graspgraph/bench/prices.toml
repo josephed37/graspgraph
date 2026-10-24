@@ -1,0 +1,14 @@
+# Model prices in USD per million tokens, used for cost_usd and the --max-usd spend cap.
+# Tables are keyed by backend, then model. "*" matches any model of that backend.
+# max_prompt_tokens: the price only holds for prompts up to this size; longer prompts are
+# still costed at this rate but the record's error field notes the cost may be too low.
+
+[ollama]
+"*" = { input = 0.0, output = 0.0 }  # local models cost nothing per token
+
+[fake]
+"*" = { input = 0.0, output = 0.0 }
+
+[anthropic]
+claude-haiku-5-5 = { input = 0.10, output = 0.50, max_prompt_tokens = 100000 }
+claude-sonnet-5-5 = { input = 2.00, output = 10.00 }

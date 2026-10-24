@@ -6,9 +6,16 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
+    "langchain-anthropic>=1.7.6",
+    "langchain-core>=1.7.0",
+    "langchain-ollama>=1.1.0",
+    "langgraph>=1.2.17",
     "mujoco>=3.3",
     "numpy>=1.26",
 ]
+
+[project.scripts]
+graspgraph-bench = "graspgraph.bench.cli:main"
 
 [dependency-groups]
 dev = [
@@ -26,3 +33,5 @@ packages = ["src/graspgraph"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long-running checks (full oracle validation); run with `pytest -m slow`"]
+addopts = "-m 'not slow'"

@@ -23,7 +23,8 @@ Already have Menagerie elsewhere? Point to it instead: `export GRASPGRAPH_MENAGE
 
 ```bash
 uv run python scripts/view_scene.py --seed 3 --blocks 4 --bowls 2   # opens the 3D viewer
-uv run pytest                                                        # scene, IK and primitive tests (~20 s)
+uv run pytest                                                        # all fast tests (~70 s)
+uv run pytest -m slow                                                # full oracle check of all 110 tasks (~70 s)
 ```
 
 Every scene is built from a seed: the same seed always gives the same objects, colours and positions.
@@ -66,6 +67,57 @@ Record a demo (pick red into a bowl, stack two blocks, go home) without a displa
 ```bash
 uv run python scripts/demo_primitives.py            # outputs/demo_primitives.mp4
 ```
+
+## Task suite
+
+`graspgraph.tasks` generates the benchmark: 10 families x 11 seeds = 110 tasks. A task id such as `stack-007` always rebuilds the identical scene, instruction, success predicate and oracle plan. Phrasing varies between a few templates per family, chosen by seed. List them with `uv run python scripts/list_tasks.py`.
+
+| family | example instruction | success when |
+|---|---|---|
+| `pick_place` | "Put the red block in the blue bowl." | the block rests inside that bowl's footprint, low in the bowl |
+| `stack` | "Stack the green block on the yellow one." | the top block is within 2 cm (xy) of the lower one, at the right height |
+| `tower` | "Stack the blocks into a tower, bottom to top: red, blue, green." | all three are stacked in that order, the bottom one on the table |
+| `sort` | "Put each block in the bowl of the same colour." | every block with a same-coloured bowl is in it (scenes always have at least two matches) |
+| `spatial` | "Move the left-most block to the front right corner of the table." | the referred block rests on the table inside the named region |
+| `arrange` | "Line the blocks up from left to right: red, green, blue." | the blocks are ordered along y as stated, at least 5 cm apart, with x spread at most 4 cm |
+| `count` | "Put two blocks in each bowl." | each bowl holds exactly the stated number of blocks |
+| `ambiguous` | "Move the block into the bowl." (several blocks) | the planner calls `ask_clarification` and nothing moved |
+| `impossible` | "Put the purple block in the bowl." (no purple block) | the planner calls `refuse` and nothing moved |
+| `undo` | "Undo the last move." (a setup move happened first; its history is in the prompt) | the moved block is back within 2 cm of where it was and nothing else moved |
+
+How success is checked:
+- Predicates (`tasks/predicates.py`) read only the final simulator state (`get_scene()`), never anything the model says. All tolerances are named constants in that file.
+- Directions are from the robot's point of view: front is away from the robot (+x) and left is +y. The named regions are defined once in `tasks/regions.py` and are given to the planner in its prompt.
+- No "act" task is already solved when the planner starts.
+- Every task ships an oracle plan. `uv run python scripts/validate_oracles.py` runs all 110 through the real primitives, which proves the benchmark is solvable: **110/110**.
+
+## Running the benchmark
+
+The open-loop planner (`graspgraph.planner`) is a LangGraph graph: build_prompt -> plan -> execute. One model call returns the whole plan as tool calls, and execute runs them in order without checking or replanning, stopping at `ask_clarification` or `refuse`. Object arguments are enums of the scene's object names. Prompts live in `planner/prompts.py` (`PROMPT_VERSION` is written into every record).
+
+```bash
+# Local Gemma via Ollama (free). Pull the model first: ollama pull gemma4:12b
+uv run graspgraph-bench --backend ollama --model gemma4:12b --mode open --families all \
+    --no-think --out results/gemma4-12b_open.jsonl
+uv run graspgraph-bench --backend ollama --model gemma4:12b --think --out results/gemma4-12b_open_think.jsonl
+
+# Claude (needs ANTHROPIC_API_KEY); --max-usd is the spend cap, default 1.00
+export ANTHROPIC_API_KEY=...
+uv run graspgraph-bench --backend anthropic --model claude-haiku-5-5 --max-usd 1.00 --out results/haiku-5-5_open.jsonl
+uv run graspgraph-bench --backend anthropic --model claude-sonnet-5-5 --limit 50 --max-usd 2.00
+
+# No model at all: scripted plans (oracle, wrong-object, no-tools) for dry runs
+uv run graspgraph-bench --backend fake --model oracle
+
+uv run python scripts/summarize.py results/*.jsonl
+```
+
+Other options: `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (Anthropic, default 1024), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
+
+- **Output**: one JSON line per task run, with success, `outcome_type`, the tool calls, every primitive result, tokens, `cost_usd` and model latency. The outcome types are `success`, `wrong_object`, `bad_placement`, `primitive_failed`, `no_tool_calls`, `hallucinated_object`, `asked_correctly`, `refused_correctly`, `should_have_asked`, `should_have_refused`, `should_have_acted`, `acted_when_should_not` and `llm_error`.
+- **Resume**: rerunning with the same `--out` skips runs already recorded, so a crashed run continues where it stopped. Runs that hit an `llm_error` are retried.
+- **Spend cap**: before each run, the money already spent in the file plus the most expensive run so far is compared with `--max-usd`, and the run stops cleanly before crossing it. Prices are in `src/graspgraph/bench/prices.toml`; Ollama costs $0.
+- **LangSmith tracing** is on only when both `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are set (optionally `LANGSMITH_PROJECT`). Otherwise nothing is sent anywhere.
 
 ## License
 

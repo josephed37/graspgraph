@@ -225,3 +225,6 @@ third_party/
 
 # Demo videos and other generated files
 outputs/
+
+# Benchmark results
+results/
