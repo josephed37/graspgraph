@@ -80,6 +80,7 @@ def run_task(
         "output_tokens": run.output_tokens,
         "cost_usd": price.cost(run.input_tokens, run.output_tokens),
         "latency_s": round(run.latency_s, 3),
+        "finish_reason": run.finish_reason,
         "error": "; ".join(notes) or None,
         "response_text": run.response_text[:MAX_RESPONSE_CHARS],
     }

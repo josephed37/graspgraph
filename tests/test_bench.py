@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from graspgraph.actions import ToolCall
 from graspgraph.bench.cli import main as bench_main
@@ -34,7 +35,7 @@ def test_oracle_fake_scores_100_percent_one_task_per_family(protocol):
 def test_records_hold_the_planned_step_count_and_raw_plan():
     task = _first("tower")
     record = run_task(task, make_backend("fake", "oracle"), FREE)
-    assert record["plan_protocol"] == "submit_plan" and record["prompt_version"] == "open-v3-submit-plan"
+    assert record["plan_protocol"] == "submit_plan" and record["prompt_version"] == "open-v4-submit-plan"
     assert record["planned_steps"] == 4
     assert record["raw_plan"] == [{"tool": c.name, "args": c.args} for c in task.oracle]
     assert [c["name"] for c in record["tool_calls"]] == ["submit_plan"]
@@ -74,6 +75,15 @@ def _looping(task):
     raise RuntimeError(REPEAT_LOOP)
 
 
+def _ran_out_of_tokens(task):
+    # What Gemma did with nested step schemas: output up to the cap, nothing parseable.
+    return AIMessage(content="", response_metadata={"done_reason": "length"})
+
+
+def _silent(task):
+    return AIMessage(content="", response_metadata={"done_reason": "stop"})
+
+
 # (expected outcome_type, task id, policy: task -> planned steps, protocol)
 LABEL_CASES = [
     ("success", "pick-place-000", lambda t: list(t.oracle), "submit_plan"),
@@ -89,6 +99,7 @@ LABEL_CASES = [
     ("invalid_plan", "stack-000", lambda t: [t.oracle[0], ToolCall("place_on", {})], "submit_plan"),
     ("invalid_plan", "stack-000", lambda t: [t.oracle[0], ToolCall("grab", {"obj_name": "block_red"})], "multi_call"),
     ("no_tool_calls", "stack-000", lambda t: [], "submit_plan"),
+    ("no_tool_calls", "stack-000", _silent, "submit_plan"),
     ("hallucinated_object", "stack-000", lambda t: [ToolCall("pick", {"obj_name": "red block"})], "submit_plan"),
     ("asked_correctly", "ambiguous-000", lambda t: [ToolCall("ask_clarification", {"question": "Which?"})], "submit_plan"),
     ("should_have_asked", "ambiguous-000", lambda t: [ToolCall("refuse", {"reason": "no"})], "submit_plan"),
@@ -105,6 +116,7 @@ LABEL_CASES = [
     ("should_have_acted", "stack-000", lambda t: [ToolCall("ask_clarification", {"question": "Sure?"})], "submit_plan"),
     ("llm_error", "stack-000", _broken, "submit_plan"),
     ("degenerate_output", "stack-000", _looping, "submit_plan"),
+    ("degenerate_output", "stack-000", _ran_out_of_tokens, "submit_plan"),
 ]
 
 
@@ -243,10 +255,15 @@ def test_a_new_prompt_version_is_not_skipped_on_resume(tmp_path):
     report = run_benchmark(TASKS[:1], backend, out, FREE, log=lambda _: None)
     assert (report.ran, report.skipped) == (1, 0)
     table = summarize(out)  # one table per configuration, never averaged together
-    assert table.count("== ") == 2 and "prompt_version=open-v2-submit-plan" in table and "prompt_version=open-v3-submit-plan" in table
+    assert table.count("== ") == 2 and "prompt_version=open-v2-submit-plan" in table and "prompt_version=open-v4-submit-plan" in table
 
 
 def test_ollama_output_is_capped():
     assert make_backend("ollama").chat_model.num_predict == 2048
     assert make_backend("ollama", think=True).chat_model.num_predict == 8192  # thinking counts against the cap
     assert make_backend("ollama", max_tokens=500).chat_model.num_predict == 500
+
+
+def test_finish_reason_is_recorded():
+    assert run_task(get_task("stack-000"), FakeBackend(_ran_out_of_tokens), FREE)["finish_reason"] == "length"
+    assert run_task(get_task("stack-000"), make_backend("fake", "oracle"), FREE)["finish_reason"] is None

@@ -10,8 +10,10 @@ from graspgraph.sim.scene import TABLE_X, TABLE_Y
 from graspgraph.tasks.regions import describe_regions
 
 # One version per protocol, written into every benchmark record. Bump when wording changes.
-# v3 (both protocols): the move history now says what "from" and "to" mean and how to undo.
-PROMPT_VERSIONS: dict[PlanProtocol, str] = {"multi_call": "open-v3-multi-call", "submit_plan": "open-v3-submit-plan"}
+# The version covers everything the model sees, tool schemas included.
+# v3 (both protocols): the move history says what "from" and "to" mean and how to undo.
+# v4 (submit_plan): back to the flat step schema (v3's nested anyOf broke Gemma's tool calls).
+PROMPT_VERSIONS: dict[PlanProtocol, str] = {"multi_call": "open-v3-multi-call", "submit_plan": "open-v4-submit-plan"}
 
 HISTORY_INTRO = (
     "Moves made so far, oldest first. Each move names the block that moved, where it was before the move "

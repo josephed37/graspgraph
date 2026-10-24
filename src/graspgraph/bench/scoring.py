@@ -24,10 +24,11 @@ OutcomeType = Literal[
     "should_have_refused",
     "should_have_acted",  # asked or refused on a task that just needed doing
     "acted_when_should_not",
-    "degenerate_output",  # the model got stuck (e.g. repeating itself) and the server aborted it
+    "degenerate_output",  # the model got stuck repeating itself, or hit the token cap with no plan
     "llm_error",  # the model call failed for another reason (network, API error); retried on resume
 ]
 SUCCESSES = {"success", "asked_correctly", "refused_correctly"}
+TRUNCATED = {"length", "max_tokens"}  # finish reasons for hitting the output-token cap
 PLACING = ("place_on", "place_at")
 
 
@@ -52,7 +53,9 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
     if run.stop in ("llm_error", "degenerate_output"):
         return run.stop
     if run.stop == "no_tool_calls":
-        return "no_tool_calls"
+        # Hitting the cap with nothing usable means the model ran away (a plan needs a few
+        # hundred tokens), the same failure as a loop the server aborts.
+        return "degenerate_output" if run.finish_reason in TRUNCATED else "no_tool_calls"
     if run.stop == "invalid_plan":
         return run.plan_error_kind or "invalid_plan"
 

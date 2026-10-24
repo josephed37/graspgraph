@@ -124,7 +124,7 @@ uv run python scripts/summarize.py results/*.jsonl
 
 Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (output cap; defaults: Anthropic 1024, Ollama 2048, or 8192 with `--think` because thinking counts against it), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
 
-- **Output**: one JSON line per task run, with success, `outcome_type`, `plan_protocol`, `planned_steps`, `raw_plan` (exactly what the model submitted), `plan_error`, the tool calls, every primitive result, tokens, `cost_usd` and model latency. The default file name includes the protocol.
+- **Output**: one JSON line per task run, with success, `outcome_type`, `plan_protocol`, `planned_steps`, `raw_plan` (exactly what the model submitted), `plan_error`, `finish_reason` (why the model stopped, e.g. `length` at the token cap), the tool calls, every primitive result, tokens, `cost_usd` and model latency. The default file name includes the protocol.
 - **Outcome types**:
   - **Success**: `success`, `asked_correctly`, `refused_correctly`.
   - **Failures on "act" tasks**:
@@ -134,7 +134,7 @@ Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower
     - `bad_placement`: anything else.
   - **Plan problems**: `invalid_plan` (a malformed step: unknown tool, missing or bad arguments; nothing runs), `hallucinated_object` (an object name not in the scene), `no_tool_calls`.
   - **Ask and refuse mistakes**: `should_have_asked`, `should_have_refused`, `should_have_acted`, `acted_when_should_not`.
-  - **Model failures**: `degenerate_output` (the model got stuck repeating itself and the server aborted it).
+  - **Model failures**: `degenerate_output` (the model got stuck repeating itself, or hit the output cap without producing a usable plan).
   - **Model call failed**: `llm_error` (network or API trouble).
 - **Resume**: rerunning with the same `--out` skips runs already recorded with the same model, protocol and prompt version, so a crashed run continues where it stopped.
   - Only `llm_error` runs are retried. Model failures such as `degenerate_output` are not, so no task gets extra attempts.

@@ -51,6 +51,7 @@ class PlanRun:
     input_tokens: int
     output_tokens: int
     latency_s: float  # wall time of the model call only
+    finish_reason: str | None = None  # why the model stopped: e.g. "stop", or "length" at the token cap
     error: str | None = None  # set when the model call itself failed
 
     @property
@@ -127,5 +128,13 @@ def run_open_loop(backend: PlannerBackend, episode: Episode, protocol: PlanProto
         input_tokens=int(usage.get("input_tokens", 0)),
         output_tokens=int(usage.get("output_tokens", 0)),
         latency_s=final["latency_s"],
+        finish_reason=finish_reason(response),
         error=final.get("error"),
     )
+
+
+def finish_reason(response: AIMessage) -> str | None:
+    """Why the model stopped generating, as each provider reports it."""
+    meta = response.response_metadata or {}
+    reason = meta.get("done_reason") or meta.get("stop_reason") or meta.get("finish_reason")  # Ollama, Anthropic, others
+    return str(reason) if reason else None

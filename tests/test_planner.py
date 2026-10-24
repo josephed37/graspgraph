@@ -41,14 +41,11 @@ def test_tool_schema_object_enums_match_the_scene():
 
         submit = {s["function"]["name"]: s["function"] for s in tool_schemas(names, "submit_plan")}
         assert set(submit) == {"submit_plan", "ask_clarification", "refuse"}
-        variants = submit["submit_plan"]["parameters"]["properties"]["steps"]["items"]["anyOf"]
-        by_tool = {v["properties"]["tool"]["enum"][0]: v["properties"]["args"] for v in variants}
-        assert list(by_tool) == list(MOTION_TOOLS)
-        for tool, args in by_tool.items():  # each tool offers exactly its own arguments
-            assert list(args["properties"]) == list(MOTION_TOOLS[tool]) == args["required"]
-            assert args["additionalProperties"] is False
-        for tool in ("pick", "place_on"):
-            assert by_tool[tool]["properties"]["obj_name"]["enum"] == names
+        step = submit["submit_plan"]["parameters"]["properties"]["steps"]["items"]
+        assert "anyOf" not in step  # flat on purpose: nested schemas broke Gemma's tool calls
+        assert step["properties"]["tool"]["enum"] == list(MOTION_TOOLS)
+        args = step["properties"]["args"]["properties"]
+        assert list(args) == ["obj_name", "x", "y"] and args["obj_name"]["enum"] == names
 
 
 def test_parse_tool_calls_accepts_dicts_strings_and_wrappers():
