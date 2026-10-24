@@ -45,15 +45,15 @@ def positions(state: State) -> dict[str, np.ndarray]:
 
 
 def _in_bowl(block: np.ndarray, bowl: np.ndarray) -> bool:
-    return bool(np.all(np.abs(block[:2] - bowl[:2]) < IN_BOWL_XY)) and abs(block[2] - IN_BOWL_Z) < Z_TOL
+    return bool(np.all(np.abs(block[:2] - bowl[:2]) < IN_BOWL_XY) and abs(block[2] - IN_BOWL_Z) < Z_TOL)
 
 
 def _on_top(top: np.ndarray, base: np.ndarray) -> bool:
-    return np.linalg.norm(top[:2] - base[:2]) < STACK_XY_TOL and abs(top[2] - base[2] - 2 * BLOCK_HALF) < Z_TOL
+    return bool(np.linalg.norm(top[:2] - base[:2]) < STACK_XY_TOL and abs(top[2] - base[2] - 2 * BLOCK_HALF) < Z_TOL)
 
 
 def _on_table(block: np.ndarray) -> bool:
-    return abs(block[2] - ON_TABLE_Z) < Z_TOL
+    return bool(abs(block[2] - ON_TABLE_Z) < Z_TOL)
 
 
 def _moved(start: State, final: State, names: list[str], tol: float = UNCHANGED_TOL) -> list[str]:
@@ -144,7 +144,7 @@ class InRegion:
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)[self.block]
         region = REGIONS[self.region]
-        ok = region.contains(p[0], p[1], REGION_SLACK) and _on_table(p)
+        ok = region.contains(float(p[0]), float(p[1]), REGION_SLACK) and _on_table(p)
         return Verdict(ok, f"{self.block} {'is' if ok else 'is not'} on the table in the {region.label}")
 
 
