@@ -11,9 +11,11 @@ from graspgraph.tasks.predicates import State, Unchanged, Verdict
 
 OutcomeType = Literal[
     "success",
-    "wrong_object",
+    "wrong_object",  # acted on an object the instruction did not refer to
+    "incomplete_plan",  # only the right objects, but the plan stopped before the task was done
     "bad_placement",
     "primitive_failed",
+    "invalid_plan",  # a planned step was malformed (unknown tool, missing or bad arguments)
     "no_tool_calls",
     "hallucinated_object",
     "asked_correctly",
@@ -25,22 +27,33 @@ OutcomeType = Literal[
     "llm_error",  # the model call itself failed (network, API error, bad response)
 ]
 SUCCESSES = {"success", "asked_correctly", "refused_correctly"}
+PLACING = ("place_on", "place_at")
 
 
 def _objects(calls: list[ToolCall] | tuple[ToolCall, ...], task: Task, kinds: dict[str, str]) -> set[str]:
+    """Objects the calls act on, leaving out the task's interchangeable kind (if any)."""
     names = {n for c in calls for n in c.object_names()}
     return {n for n in names if kinds.get(n) != task.interchangeable}
 
 
+def _placements(calls: list[ToolCall] | tuple[ToolCall, ...]) -> int:
+    return sum(c.name in PLACING for c in calls)
+
+
 def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: State) -> OutcomeType:
-    """Outcome type of a finished run. `verdict` is the task predicate on the final state."""
+    """Outcome type of a finished run. `verdict` is the task predicate on the final state.
+
+    For "act" tasks that failed, in order: acting on an object the instruction did not refer
+    to is wrong_object; a primitive refusing or failing is primitive_failed; a plan that used
+    only referred objects but left some out, placed fewer blocks than the task needs, or
+    ended still holding a block is incomplete_plan; anything else is bad_placement.
+    """
     if run.stop == "llm_error":
         return "llm_error"
     if run.stop == "no_tool_calls":
         return "no_tool_calls"
-    kinds = {o["name"]: o["kind"] for o in start["objects"]}
-    if any(n not in kinds for c in run.tool_calls for n in c.object_names()):
-        return "hallucinated_object"
+    if run.stop == "invalid_plan":
+        return run.plan_error_kind or "invalid_plan"
 
     executed = [ToolCall(r["name"], r["args"]) for r in run.results]
     acted = any(c.name not in STOP_TOOLS for c in executed)
@@ -56,8 +69,12 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
         return "should_have_acted"
     if verdict.success:
         return "success"
-    if _objects(executed, task, kinds) != _objects(task.oracle, task, kinds):
+    kinds = {o["name"]: o["kind"] for o in start["objects"]}
+    touched, referred = _objects(executed, task, kinds), _objects(task.oracle, task, kinds)
+    if touched - referred:
         return "wrong_object"
     if not all(r["success"] for r in run.results):
         return "primitive_failed"
+    if referred - touched or _placements(executed) < _placements(task.oracle) or final["held"] is not None:
+        return "incomplete_plan"
     return "bad_placement"

@@ -14,7 +14,7 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 
-from graspgraph.actions import ToolCall
+from graspgraph.actions import STOP_TOOLS, ToolCall
 from graspgraph.tasks import Task
 
 DEFAULT_MODELS = {"ollama": "gemma4:12b", "anthropic": "claude-haiku-5-5", "fake": "oracle"}
@@ -77,11 +77,16 @@ def anthropic_backend(
     return ChatModelBackend(chat, "anthropic", model, None)
 
 
-Policy = Callable[[Task], list[ToolCall]]
+Policy = Callable[[Task], list[ToolCall] | AIMessage]
 
 
 class FakeBackend(PlannerBackend):
-    """Returns the tool calls a policy scripts for the current task, with made-up token usage."""
+    """Answers with the plan a policy scripts for the current task, with made-up token usage.
+
+    A policy returns the plan as a list of steps, which the fake formats for the protocol the
+    offered tools imply (one submit_plan call, or one call per step), or a ready AIMessage
+    when a test needs exact control over the raw output.
+    """
 
     def __init__(self, policy: Policy, model: str = "custom", input_tokens: int = 0, output_tokens: int = 0) -> None:
         super().__init__("fake", model, None)
@@ -96,7 +101,13 @@ class FakeBackend(PlannerBackend):
     def generate(self, messages: list[BaseMessage], tools: list[dict[str, Any]]) -> AIMessage:
         if self._task is None:
             raise RuntimeError("FakeBackend.prepare(task) must be called before generate()")
-        calls = self.policy(self._task)
+        planned = self.policy(self._task)
+        if isinstance(planned, AIMessage):
+            return planned
+        offered = {t["function"]["name"] for t in tools}
+        calls = planned
+        if "submit_plan" in offered and planned and planned[0].name not in STOP_TOOLS:
+            calls = [ToolCall("submit_plan", {"steps": [{"tool": c.name, "args": dict(c.args)} for c in planned]})]
         return AIMessage(
             content="",
             tool_calls=[{"name": c.name, "args": dict(c.args), "id": f"call_{i}"} for i, c in enumerate(calls)],
@@ -114,17 +125,26 @@ def oracle_policy(task: Task) -> list[ToolCall]:
 
 
 def wrong_object_policy(task: Task) -> list[ToolCall]:
-    """The oracle plan with its first picked block swapped for another block in the scene."""
+    """The oracle plan with its first pick swapped for a block the instruction does not mention.
+
+    Tasks that involve every block (e.g. tower) have no such block and get the oracle plan.
+    """
     from graspgraph.sim import build_scene
 
     calls = list(task.oracle)
+    mentioned = {n for c in calls for n in c.object_names()}
+    blocks = [o.name for o in build_scene(task.scene_config).objects if o.kind == "block"]
+    others = [b for b in blocks if b not in mentioned]
     for i, call in enumerate(calls):
-        if call.name == "pick":
-            blocks = [o.name for o in build_scene(task.scene_config).objects if o.kind == "block"]
-            other = next(b for b in blocks if b != call.args["obj_name"])
-            calls[i] = ToolCall("pick", {"obj_name": other})
+        if call.name == "pick" and others:
+            calls[i] = ToolCall("pick", {"obj_name": others[0]})
             break
     return calls
+
+
+def first_step_policy(task: Task) -> list[ToolCall]:
+    """Only the oracle's first step: how Gemma behaved under the multi_call protocol."""
+    return list(task.oracle[:1])
 
 
 def no_tools_policy(task: Task) -> list[ToolCall]:
@@ -136,6 +156,7 @@ FAKE_POLICIES: dict[str, Policy] = {
     "oracle": oracle_policy,
     "wrong-object": wrong_object_policy,
     "no-tools": no_tools_policy,
+    "first-step": first_step_policy,
 }
 
 

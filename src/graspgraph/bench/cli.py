@@ -4,6 +4,7 @@
         --out results/gemma4-12b_open.jsonl
     uv run graspgraph-bench --backend anthropic --model claude-haiku-5-5 --max-usd 0.50
     uv run graspgraph-bench --backend fake --model oracle          # no network: scripted plans
+    uv run graspgraph-bench --backend ollama --plan-protocol multi_call   # the original protocol, for comparison
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 from graspgraph.bench.pricing import load_prices, price_for
 from graspgraph.bench.runner import run_benchmark, tracing_enabled
 from graspgraph.planner.backends import DEFAULT_MODELS, FAKE_POLICIES, make_backend
+from graspgraph.planner.plans import PLAN_PROTOCOLS
 from graspgraph.tasks import FAMILY_NAMES, build_suite, get_task
 
 
@@ -28,6 +30,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"model name; defaults: {DEFAULT_MODELS}. Fake policies: {', '.join(FAKE_POLICIES)}",
     )
     parser.add_argument("--mode", choices=["open"], default="open", help="planner mode (closed loop comes in week 3)")
+    parser.add_argument(
+        "--plan-protocol",
+        choices=PLAN_PROTOCOLS,
+        default="submit_plan",
+        help="submit_plan: one call holding every step (default); multi_call: one tool call per step (original)",
+    )
     parser.add_argument("--families", nargs="+", default=["all"], help=f"'all' or any of: {', '.join(FAMILY_NAMES)}")
     parser.add_argument("--task-ids", nargs="+", help="run only these task ids (overrides --families)")
     parser.add_argument("--limit", type=int, help="run only the first N selected tasks")
@@ -39,7 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, help="sampling temperature (default: the provider's own)")
     parser.add_argument("--max-usd", type=float, default=1.00, help="stop before spend would exceed this (default 1.00)")
     parser.add_argument("--ollama-url", help="Ollama server URL (default: http://localhost:11434)")
-    parser.add_argument("--out", type=Path, help="JSONL output; default results/<backend>-<model>_<mode>.jsonl")
+    parser.add_argument("--out", type=Path, help="JSONL output; default results/<backend>-<model>_<mode>_<protocol>.jsonl")
     return parser.parse_args(argv)
 
 
@@ -61,13 +69,17 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"graspgraph-bench: {exc}")
     if args.limit is not None:
         tasks = tasks[: args.limit]
-    out = args.out or Path("results") / f"{args.backend}-{model.replace(':', '-').replace('/', '-')}_{args.mode}.jsonl"
+    slug = model.replace(":", "-").replace("/", "-")
+    out = args.out or Path("results") / f"{args.backend}-{slug}_{args.mode}_{args.plan_protocol}.jsonl"
 
     print(
-        f"{len(tasks)} tasks x {args.repeats} repeats with {args.backend}/{model} (think={backend.think}), "
+        f"{len(tasks)} tasks x {args.repeats} repeats with {args.backend}/{model} (think={backend.think}, "
+        f"protocol={args.plan_protocol}), "
         f"cap ${args.max_usd:.2f}, LangSmith tracing {'on' if tracing_enabled() else 'off'} -> {out}"
     )
-    report = run_benchmark(tasks, backend, out, price, repeats=args.repeats, max_usd=args.max_usd, mode=args.mode)
+    report = run_benchmark(
+        tasks, backend, out, price, repeats=args.repeats, max_usd=args.max_usd, mode=args.mode, protocol=args.plan_protocol
+    )
     print(
         f"done: {report.ran} run, {report.skipped} already recorded, ${report.spent_usd:.4f} spent in total"
         + (" (stopped by the spend cap)" if report.stopped_by_cap else "")

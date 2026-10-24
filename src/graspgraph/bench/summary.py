@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from graspgraph.bench.runner import read_records, run_key
+from graspgraph.bench.runner import LEGACY_DEFAULTS, read_records, run_key
 
 
 def latest_records(path: Path) -> list[dict[str, Any]]:
@@ -26,7 +26,13 @@ def summarize(path: Path) -> str:
     records = latest_records(path)
     if not records:
         return f"{path}: no records"
-    configs = sorted({f"{r['backend']}/{r['model']} think={r['think']} mode={r['mode']}" for r in records})
+    configs = sorted(
+        {
+            f"{r['backend']}/{r['model']} think={r['think']} mode={r['mode']} "
+            f"protocol={r.get('plan_protocol', LEGACY_DEFAULTS['plan_protocol'])}"
+            for r in records
+        }
+    )
     lines = [f"== {path}  ({'; '.join(configs)})", f"overall success  {_rate(sum(r['success'] for r in records), len(records))}", ""]
 
     by_family: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -44,5 +50,7 @@ def summarize(path: Path) -> str:
     tokens_in = sum(r["input_tokens"] for r in records)
     tokens_out = sum(r["output_tokens"] for r in records)
     cost = sum(r["cost_usd"] for r in records)
-    lines += ["", f"mean latency {latency:.2f}s | tokens in {tokens_in:,} out {tokens_out:,} | cost ${cost:.4f}"]
+    planned = [r["planned_steps"] for r in records if "planned_steps" in r]
+    steps = f"mean planned steps {sum(planned) / len(planned):.1f} | " if planned else ""
+    lines += ["", f"{steps}mean latency {latency:.2f}s | tokens in {tokens_in:,} out {tokens_out:,} | cost ${cost:.4f}"]
     return "\n".join(lines)

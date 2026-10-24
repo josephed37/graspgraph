@@ -20,10 +20,13 @@ from graspgraph.bench.pricing import Price
 from graspgraph.bench.scoring import SUCCESSES, classify
 from graspgraph.planner.backends import PlannerBackend
 from graspgraph.planner.graph import run_open_loop
-from graspgraph.planner.prompts import PROMPT_VERSION
+from graspgraph.planner.plans import PlanProtocol
+from graspgraph.planner.prompts import PROMPT_VERSIONS
 from graspgraph.tasks import Task, start_episode
 
-KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "mode")
+KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "mode", "plan_protocol")
+# Records written before plan_protocol existed all used the original one-call-per-step protocol.
+LEGACY_DEFAULTS = {"plan_protocol": "multi_call"}
 MAX_RESPONSE_CHARS = 2000  # keep a model's prose (useful for no_tool_calls) without bloating logs
 
 
@@ -34,13 +37,20 @@ def tracing_enabled() -> bool:
 
 def run_key(record: dict[str, Any]) -> tuple:
     """Identity of one task run, used for resuming and de-duplicating."""
-    return tuple(record.get(k) for k in KEY_FIELDS)
+    return tuple(record.get(k, LEGACY_DEFAULTS.get(k)) for k in KEY_FIELDS)
 
 
-def run_task(task: Task, backend: PlannerBackend, price: Price, repeat: int = 0, mode: str = "open") -> dict[str, Any]:
+def run_task(
+    task: Task,
+    backend: PlannerBackend,
+    price: Price,
+    repeat: int = 0,
+    mode: str = "open",
+    protocol: PlanProtocol = "submit_plan",
+) -> dict[str, Any]:
     """Plan and execute one task, score it from the final simulator state, return its record."""
     episode = start_episode(task)
-    run = run_open_loop(backend, episode)
+    run = run_open_loop(backend, episode, protocol)
     final = episode.robot.get_scene()
     verdict = episode.verdict()
     outcome = classify(task, run, verdict, episode.start_state, final)
@@ -54,12 +64,16 @@ def run_task(task: Task, backend: PlannerBackend, price: Price, repeat: int = 0,
         "think": backend.think,
         "mode": mode,
         "repeat": repeat,
-        "prompt_version": PROMPT_VERSION,
+        "plan_protocol": protocol,
+        "prompt_version": PROMPT_VERSIONS[protocol],
         "success": outcome in SUCCESSES,
         "expected_outcome": task.expected_outcome,
         "outcome_type": outcome,
         "detail": verdict.detail,
         "tool_calls": [c.to_dict() for c in run.tool_calls],
+        "planned_steps": run.plan.planned_steps if run.plan else 0,
+        "raw_plan": run.plan.raw if run.plan else None,
+        "plan_error": run.plan.error if run.plan else None,
         "primitive_results": run.results,
         "steps": sum(r["steps"] for r in run.results),
         "input_tokens": run.input_tokens,
@@ -100,6 +114,7 @@ def run_benchmark(
     repeats: int = 1,
     max_usd: float = 1.00,
     mode: str = "open",
+    protocol: PlanProtocol = "submit_plan",
     log: Callable[[str], None] = print,
 ) -> BenchReport:
     """Run every (task, repeat) not yet recorded in `out`, appending one JSON line each.
@@ -122,7 +137,7 @@ def run_benchmark(
     with langsmith.tracing_context(enabled=tracing_enabled()), out.open("a") as f:
         for repeat in range(repeats):
             for task in tasks:
-                key = (task.task_id, repeat, backend.backend, backend.model, backend.think, mode)
+                key = (task.task_id, repeat, backend.backend, backend.model, backend.think, mode, protocol)
                 if key in done:
                     skipped += 1
                     continue
@@ -130,7 +145,7 @@ def run_benchmark(
                     log(f"spend cap reached: ${spent:.4f} spent, next run could cost up to ${worst:.4f}, cap ${max_usd:.2f}. Stopping.")
                     stopped = True
                     break
-                record = run_task(task, backend, price, repeat, mode)
+                record = run_task(task, backend, price, repeat, mode, protocol)
                 f.write(json.dumps(record) + "\n")
                 f.flush()
                 spent += record["cost_usd"]
