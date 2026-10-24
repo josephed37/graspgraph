@@ -267,3 +267,15 @@ def test_ollama_output_is_capped():
 def test_finish_reason_is_recorded():
     assert run_task(get_task("stack-000"), FakeBackend(_ran_out_of_tokens), FREE)["finish_reason"] == "length"
     assert run_task(get_task("stack-000"), make_backend("fake", "oracle"), FREE)["finish_reason"] is None
+
+
+def test_temperature_is_recorded_and_keeps_runs_apart(tmp_path):
+    out = tmp_path / "r.jsonl"
+    default, cold = make_backend("fake", "oracle"), make_backend("fake", "oracle")
+    cold.temperature = 0.0
+    run_benchmark(TASKS[:1], default, out, FREE, log=lambda _: None)
+    report = run_benchmark(TASKS[:1], cold, out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (1, 0)  # a different temperature is a different run
+    assert sorted(str(r["temperature"]) for r in read_records(out)) == ["0.0", "None"]
+    assert make_backend("ollama", temperature=0.2).temperature == 0.2
+    assert summarize(out).count("== ") == 2

@@ -37,10 +37,11 @@ def is_model_failure(error: Exception | str) -> bool:
 class PlannerBackend(ABC):
     """A model that turns a prompt into tool calls."""
 
-    def __init__(self, backend: str, model: str, think: bool | None = None) -> None:
+    def __init__(self, backend: str, model: str, think: bool | None = None, temperature: float | None = None) -> None:
         self.backend = backend
         self.model = model
         self.think = think
+        self.temperature = temperature  # None: the provider's default sampling
 
     def prepare(self, task: Task) -> None:
         """Called before each task. Real models ignore it; FakeBackend uses it to pick its script."""
@@ -53,8 +54,15 @@ class PlannerBackend(ABC):
 class ChatModelBackend(PlannerBackend):
     """Any LangChain chat model that supports tool calling."""
 
-    def __init__(self, chat_model: BaseChatModel, backend: str, model: str, think: bool | None = None) -> None:
-        super().__init__(backend, model, think)
+    def __init__(
+        self,
+        chat_model: BaseChatModel,
+        backend: str,
+        model: str,
+        think: bool | None = None,
+        temperature: float | None = None,
+    ) -> None:
+        super().__init__(backend, model, think, temperature)
         self.chat_model = chat_model
 
     def generate(self, messages: list[BaseMessage], tools: list[dict[str, Any]]) -> AIMessage:
@@ -86,7 +94,7 @@ def ollama_backend(
         num_predict=max_tokens,
         base_url=base_url,
     )
-    return ChatModelBackend(chat, "ollama", model, think)
+    return ChatModelBackend(chat, "ollama", model, think, temperature)
 
 
 def anthropic_backend(
@@ -101,7 +109,7 @@ def anthropic_backend(
     from langchain_anthropic import ChatAnthropic
 
     chat = ChatAnthropic(model=model, max_tokens=max_tokens, temperature=temperature)
-    return ChatModelBackend(chat, "anthropic", model, None)
+    return ChatModelBackend(chat, "anthropic", model, None, temperature)
 
 
 Policy = Callable[[Task], list[ToolCall] | AIMessage]

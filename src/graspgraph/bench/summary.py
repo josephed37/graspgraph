@@ -21,7 +21,7 @@ def _rate(ok: int, n: int) -> str:
     return f"{ok}/{n} ({ok / n:.1%})" if n else "0/0"
 
 
-CONFIG_FIELDS = ("backend", "model", "think", "mode", "plan_protocol", "prompt_version")
+CONFIG_FIELDS = ("backend", "model", "think", "temperature", "mode", "plan_protocol", "prompt_version")
 
 
 def _config(record: dict[str, Any]) -> str:

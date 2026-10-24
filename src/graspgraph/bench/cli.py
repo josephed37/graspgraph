@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print(
         f"{len(tasks)} tasks x {args.repeats} repeats with {args.backend}/{model} (think={backend.think}, "
-        f"protocol={args.plan_protocol}), "
+        f"temperature={backend.temperature if backend.temperature is not None else 'default'}, protocol={args.plan_protocol}), "
         f"cap ${args.max_usd:.2f}, LangSmith tracing {'on' if tracing_enabled() else 'off'} -> {out}"
     )
     report = run_benchmark(

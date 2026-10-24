@@ -24,9 +24,10 @@ from graspgraph.planner.plans import PlanProtocol
 from graspgraph.planner.prompts import PROMPT_VERSIONS
 from graspgraph.tasks import Task, start_episode
 
-KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "mode", "plan_protocol", "prompt_version")
-# Records written before plan_protocol existed all used the original one-call-per-step protocol.
-LEGACY_DEFAULTS = {"plan_protocol": "multi_call"}
+KEY_FIELDS = ("task_id", "repeat", "backend", "model", "think", "temperature", "mode", "plan_protocol", "prompt_version")
+# Records written before these fields existed all used the original one-call-per-step protocol
+# and the provider's default sampling.
+LEGACY_DEFAULTS = {"plan_protocol": "multi_call", "temperature": None}
 MAX_RESPONSE_CHARS = 2000  # keep a model's prose (useful for no_tool_calls) without bloating logs
 
 
@@ -62,6 +63,7 @@ def run_task(
         "backend": backend.backend,
         "model": backend.model,
         "think": backend.think,
+        "temperature": backend.temperature,
         "mode": mode,
         "repeat": repeat,
         "plan_protocol": protocol,
@@ -145,7 +147,10 @@ def run_benchmark(
     with langsmith.tracing_context(enabled=tracing_enabled()), out.open("a") as f:
         for repeat in range(repeats):
             for task in tasks:
-                config = (backend.backend, backend.model, backend.think, mode, protocol, PROMPT_VERSIONS[protocol])
+                config = (
+                    backend.backend, backend.model, backend.think, backend.temperature, mode, protocol,
+                    PROMPT_VERSIONS[protocol],
+                )
                 key = (task.task_id, repeat, *config)
                 if key in done:
                     skipped += 1
