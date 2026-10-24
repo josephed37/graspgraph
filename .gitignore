@@ -222,3 +222,6 @@ __marimo__/
 # Robot models are cloned here, not committed
 third_party/
 .vscode/
+
+# Demo videos and other generated files
+outputs/
