@@ -28,10 +28,23 @@ HOME_QPOS = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 0.04, 0.04])
 HOME_CTRL = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853, 255])
 
 TABLE_HEIGHT = 0.02  # thin table slab sitting on the floor
+TABLE_X = (0.15, 0.85)  # table top extent (metres, robot frame)
+TABLE_Y = (-0.45, 0.45)
 BLOCK_HALF = 0.02  # 4 cm cubes; the gripper opens to 8 cm
 BOWL_HALF = 0.06  # 12 cm square bowl (a shallow tray)
 BOWL_WALL_H = 0.03
 BOWL_WALL_T = 0.005
+
+# Tool-centre point in the "hand" frame: midway between the two fingertip pads.
+# From Menagerie's panda.xml: the finger bodies sit at z=0.0584 in the hand frame and the
+# main pad box (fingertip_pad_collision_1) is centred at z=0.0445 in the finger frame.
+TCP_OFFSET = (0.0, 0.0, 0.0584 + 0.0445)
+
+# Gripper squeeze stiffness (N per metre of finger travel). Menagerie uses 100 N/m, which
+# grips a 4 cm block with only ~2 N: blocks creep out of the fingers while carried. 1000 N/m
+# gives ~20 N, still well under the real Panda gripper's 70 N continuous force.
+GRIPPER_STIFFNESS = 1000.0
+GRIPPER_RANGE = 0.04  # finger travel mapped onto actuator8's ctrl range 0..255
 
 # Region in front of the robot where objects are placed (metres, robot frame).
 WORKSPACE_X = (0.35, 0.65)
@@ -103,8 +116,8 @@ def _add_table(spec: mujoco.MjSpec) -> None:
     spec.worldbody.add_geom(
         name="table",
         type=mujoco.mjtGeom.mjGEOM_BOX,
-        size=[0.35, 0.45, TABLE_HEIGHT / 2],
-        pos=[0.5, 0.0, TABLE_HEIGHT / 2],
+        size=[(TABLE_X[1] - TABLE_X[0]) / 2, (TABLE_Y[1] - TABLE_Y[0]) / 2, TABLE_HEIGHT / 2],
+        pos=[sum(TABLE_X) / 2, sum(TABLE_Y) / 2, TABLE_HEIGHT / 2],
         rgba=[0.55, 0.42, 0.30, 1.0],
     )
 
@@ -138,6 +151,23 @@ def _add_bowl(spec: mujoco.MjSpec, name: str, colour: str, xy: tuple[float, floa
         body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[hx, hy, h / 2], pos=[dx, dy, h / 2], rgba=rgba)
 
 
+def _prepare_arm(spec: mujoco.MjSpec) -> None:
+    """Add the TCP site, gravity compensation and a firmer gripper to the Menagerie Panda.
+
+    The real Panda controller compensates gravity internally; without it the position
+    actuators sag by a few millimetres, which matters when grasping 4 cm blocks.
+    """
+    spec.body("hand").add_site(name="tcp", pos=list(TCP_OFFSET), size=[0.005] * 3, rgba=[1, 0, 0, 0.5], group=4)
+    arm_bodies = [f"link{i}" for i in range(8)] + ["hand", "left_finger", "right_finger"]
+    for name in arm_bodies:
+        spec.body(name).gravcomp = 1.0
+    # Same ctrl semantics as Menagerie (0 = closed, 255 = open), stiffer position servo.
+    gripper = spec.actuator("actuator8")
+    gripper.gainprm[0] = GRIPPER_STIFFNESS * GRIPPER_RANGE / 255
+    gripper.biasprm[1] = -GRIPPER_STIFFNESS
+    gripper.biasprm[2] = -GRIPPER_STIFFNESS / 10
+
+
 def build_scene(config: SceneConfig | None = None) -> Scene:
     """Build a seeded scene and return it with the arm at its home pose."""
     config = config or SceneConfig()
@@ -162,6 +192,7 @@ def build_scene(config: SceneConfig | None = None) -> Scene:
     kinds = ["bowl"] * config.n_bowls + ["block"] * config.n_blocks  # bowls first: hardest to fit
     positions = _sample_positions(rng, kinds, config.clearance)
 
+    _prepare_arm(spec)
     _add_table(spec)
     objects: list[SceneObject] = []
     for colour, xy in zip(bowl_colours, positions[: config.n_bowls]):
