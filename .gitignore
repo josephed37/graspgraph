@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Robot models are cloned here, not committed
+third_party/
+.vscode/
