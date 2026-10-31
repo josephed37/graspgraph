@@ -55,7 +55,9 @@ def test_open_and_closed_and_model_comparisons(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
     _write(results / "gemma.jsonl", _suite("open") + _suite("closed"))
-    _write(results / "haiku.jsonl", _suite("open", "anthropic", "claude-haiku-5-5", cost=0.01))
+    # every Haiku run fails: 0% cells, whose Wilson bounds once gave the charts negative whiskers
+    haiku = [{**r, "success": False, "outcome_type": "bad_placement"} for r in _suite("open", "anthropic", "claude-haiku-5-5", cost=0.01)]
+    _write(results / "haiku.jsonl", haiku)
     groups = load_groups(results)
     kinds = [(kind, description) for kind, description, _, _ in comparisons(groups)]
     assert ("open vs closed", "gemma: closed - open") in kinds
@@ -64,6 +66,7 @@ def test_open_and_closed_and_model_comparisons(tmp_path):
     md = (tmp_path / "reports" / "results.md").read_text()
     assert "| open vs closed | gemma: closed - open | 4 | 75.0% | 50.0% | +25.0% [" in md
     assert "| recovered_success |" in md and "$0.0400" in md  # outcome table and Haiku's total cost
+    assert (tmp_path / "reports" / "open_vs_closed.png").exists()
     assert md.startswith(f"# {FAKE_BANNER}")  # one fake input is enough to label the whole report
 
 

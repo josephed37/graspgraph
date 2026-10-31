@@ -332,16 +332,16 @@ def write_charts(groups: list[Group], out: Path) -> list[Path]:
             lo, hi = wilson(k, n)
             rate = k / n if n else 0.0
             rates.append(rate)
-            low.append(rate - lo)
-            high.append(hi - rate)
+            low.append(max(rate - lo, 0.0))  # rounding can put a bound a hair past the rate
+            high.append(max(hi - rate, 0.0))
         x = np.arange(len(FAMILY_NAMES)) + (i - (len(groups) - 1) / 2) * width
         ax.bar(x, rates, width, yerr=[low, high], capsize=2, label=g.label, color=colours[g.model],
                hatch=hatches.get(g.mode, ""), edgecolor="white", alpha=0.6 if g.think else 1.0)
     ax.set_xticks(np.arange(len(FAMILY_NAMES)), FAMILY_NAMES, rotation=30, ha="right")
     ax.set_ylabel("success rate")
     ax.set_ylim(0, 1.05)
-    ax.set_title(_title("Success rate per task family (95% Wilson CI)", groups))
-    ax.legend(fontsize=8, ncols=2)
+    ax.set_title(_title("Success rate per task family (95% Wilson CI; hatched = open loop)", groups))
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     finish(fig, "success_by_family.png")
 
     # 2. Open vs closed, with and without faults, per config.
@@ -358,32 +358,39 @@ def write_charts(groups: list[Group], out: Path) -> list[Path]:
             lo, hi = wilson(k, n)
             rate = k / n if n else 0.0
             rates.append(rate)
-            errs[0].append(rate - lo)
-            errs[1].append(hi - rate)
+            errs[0].append(max(rate - lo, 0.0))
+            errs[1].append(max(hi - rate, 0.0))
             colour_list.append(colours[g.model] if g else "#cccccc")
         x = np.arange(len(configs)) + (j - (len(cells) - 1) / 2) * width
         ax.bar(x, rates, width, yerr=errs, capsize=2, color=colour_list, hatch=hatches[mode],
-               alpha=0.55 if faulted else 1.0, edgecolor="white",
-               label=f"{mode}, {'with' if faulted else 'no'} fault")
+               alpha=0.55 if faulted else 1.0, edgecolor="white")
     ax.set_xticks(np.arange(len(configs)), configs)
     ax.set_ylabel("success rate")
     ax.set_ylim(0, 1.05)
-    ax.set_title(_title("Open vs closed loop, with and without faults (hatched = open, faded = faulted)", groups))
-    ax.legend(fontsize=8)
+    ax.set_title(_title("Open vs closed loop, with and without faults (colour = model)", groups))
+    from matplotlib.patches import Patch
+
+    styles = [  # the legend shows the bar styles in grey: colour belongs to the model
+        Patch(facecolor="#888888", hatch=hatches[mode], alpha=0.55 if faulted else 1.0, edgecolor="white",
+              label=f"{mode} loop, {'with' if faulted else 'no'} fault")
+        for mode, faulted in cells
+    ]
+    ax.legend(handles=styles, fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     finish(fig, "open_vs_closed.png")
 
     # 3. Cost per successful task vs success rate, one point per config and mode.
     fig, ax = plt.subplots(figsize=(8, 5))
     markers = {"open": "o", "closed": "s"}
-    for g in groups:
+    for i, g in enumerate(groups):
         cost = sum(r.get("cost_usd") or 0.0 for r in g.records)
         rate = g.successes / len(g.records)
         per_success = cost / g.successes if g.successes else 0.0
         ax.scatter(rate, per_success, s=80, color=colours[g.model], marker=markers.get(g.mode, "o"), label=g.label)
-        ax.annotate(g.label, (rate, per_success), textcoords="offset points", xytext=(6, 4), fontsize=8)
+        ax.annotate(g.label, (rate, per_success), textcoords="offset points", xytext=(6, 4 + 10 * (i % 3)), fontsize=8)
     ax.set_xlabel("success rate")
-    ax.set_ylabel("cost per successful task (USD)")
-    ax.set_xlim(0, 1.05)
+    ax.set_ylabel("cost per successful task (USD; free models sit at 0)")
+    ax.set_xlim(0, 1.1)
+    ax.set_ylim(bottom=0)
     ax.set_title(_title("Cost per successful task vs success rate (circle = open, square = closed)", groups))
     finish(fig, "cost_vs_success.png")
     return written
