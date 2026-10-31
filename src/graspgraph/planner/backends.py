@@ -43,6 +43,7 @@ class PlannerBackend(ABC):
         self.model = model
         self.think = think
         self.temperature = temperature  # None: the provider's default sampling
+        self.effort: str | None = None  # Claude reasoning effort, when set
 
     def prepare(self, task: Task) -> None:
         """Called before each task. Real models ignore it; FakeBackend uses it to pick its script."""
@@ -98,19 +99,52 @@ def ollama_backend(
     return ChatModelBackend(chat, "ollama", model, think, temperature)
 
 
+# Claude reasoning settings per model, from the installed langchain-anthropic (its model
+# profiles and request validation), not from memory:
+# - Sonnet 5.5 takes effort low..max and defaults to "high", which would blow the budget. Its
+#   thinking cannot be disabled (langchain-anthropic rejects {"type": "disabled"} for it), so
+#   the cheapest valid setting is adaptive thinking at low effort. Thinking tokens count
+#   against max_tokens, hence the larger cap.
+# - Haiku 5.5's profile lists no effort levels, so effort stays unset; thinking is disabled.
+ANTHROPIC_REASONING: dict[str, dict[str, Any]] = {
+    "claude-sonnet-5-5": {"effort": "low", "thinking": "adaptive", "max_tokens": 2048},
+    "claude-haiku-5-5": {"effort": None, "thinking": "disabled", "max_tokens": DEFAULT_MAX_TOKENS["anthropic"]},
+}
+THINKING_MODES = ("disabled", "adaptive", "omit")  # "omit" sends nothing: the API's default
+
+
 def anthropic_backend(
     model: str = DEFAULT_MODELS["anthropic"],
-    max_tokens: int = DEFAULT_MAX_TOKENS["anthropic"],
+    max_tokens: int | None = None,
     temperature: float | None = None,
+    effort: str | None = None,
+    thinking: str | None = None,
 ) -> ChatModelBackend:
-    """A Claude model. Reads ANTHROPIC_API_KEY from the environment; extended thinking stays off.
+    """A Claude model. Reads ANTHROPIC_API_KEY from the environment.
 
-    `temperature` None keeps the API's default sampling.
+    `effort` (output_config.effort: "low" ... "max"), `thinking` ("disabled", "adaptive" or
+    "omit") and `max_tokens` default per model from ANTHROPIC_REASONING; unknown models get no
+    effort, thinking disabled and the default cap. `temperature` None keeps the API's default.
     """
     from langchain_anthropic import ChatAnthropic
 
-    chat = ChatAnthropic(model=model, max_tokens=max_tokens, temperature=temperature)
-    return ChatModelBackend(chat, "anthropic", model, None, temperature)
+    defaults = ANTHROPIC_REASONING.get(
+        model, {"effort": None, "thinking": "disabled", "max_tokens": DEFAULT_MAX_TOKENS["anthropic"]}
+    )
+    max_tokens = max_tokens or defaults["max_tokens"]
+    effort = effort if effort is not None else defaults["effort"]
+    thinking = thinking or defaults["thinking"]
+    if thinking not in THINKING_MODES:
+        raise ValueError(f"unknown thinking mode '{thinking}'; choose from {THINKING_MODES}")
+    options: dict[str, Any] = {}
+    if effort:
+        options["reasoning_effort"] = effort
+    if thinking != "omit":
+        options["thinking"] = {"type": thinking}
+    chat = ChatAnthropic(model=model, max_tokens=max_tokens, temperature=temperature, **options)
+    backend = ChatModelBackend(chat, "anthropic", model, thinking == "adaptive" if thinking != "omit" else None, temperature)
+    backend.effort = effort
+    return backend
 
 
 Policy = Callable[[Task], list[ToolCall] | AIMessage]
@@ -240,16 +274,19 @@ def make_backend(
     max_tokens: int | None = None,
     ollama_url: str | None = None,
     temperature: float | None = None,
+    effort: str | None = None,
+    thinking: str | None = None,
 ) -> PlannerBackend:
     """Build a backend by name: "ollama", "anthropic" or "fake" (model = a FAKE_POLICIES key).
 
-    `max_tokens` None uses DEFAULT_MAX_TOKENS for the backend.
+    `max_tokens` None uses DEFAULT_MAX_TOKENS for the backend. `effort` and `thinking` apply
+    to Anthropic only (see anthropic_backend).
     """
     model = model or DEFAULT_MODELS[backend]
     if backend == "ollama":
         return ollama_backend(model, think=think, base_url=ollama_url, temperature=temperature, max_tokens=max_tokens)
     if backend == "anthropic":
-        return anthropic_backend(model, max_tokens=max_tokens or DEFAULT_MAX_TOKENS["anthropic"], temperature=temperature)
+        return anthropic_backend(model, max_tokens, temperature, effort=effort, thinking=thinking)
     if backend == "fake":
         if model not in FAKE_POLICIES:
             raise ValueError(f"unknown fake policy '{model}'; choose from {list(FAKE_POLICIES)}")

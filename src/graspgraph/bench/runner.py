@@ -7,10 +7,13 @@ LANGSMITH_TRACING=true and LANGSMITH_API_KEY are set; otherwise nothing leaves t
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,7 @@ CONFIG_FIELDS = (
     "backend",
     "model",
     "think",
+    "effort",
     "temperature",
     "mode",
     "plan_protocol",
@@ -48,9 +52,36 @@ LEGACY_DEFAULTS = {
     "fault_rate": 0.0,
     "fault_seed": 0,
     "max_replans": None,
+    "effort": None,
 }
 MODES = ("open", "closed")
 MAX_RESPONSE_CHARS = 2000  # keep a model's prose (useful for no_tool_calls) without bloating logs
+
+
+PROVENANCE_PACKAGES = (
+    "graspgraph", "mujoco", "numpy", "langgraph", "langchain-core", "langchain-ollama", "langchain-anthropic",
+    "anthropic", "ollama",
+)
+
+
+@functools.cache
+def provenance() -> dict[str, Any]:
+    """The git commit (with a "-dirty" suffix for uncommitted changes) and package versions in use."""
+    root = Path(__file__).resolve().parents[3]
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+    try:
+        commit = git("rev-parse", "HEAD") + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+    versions = {}
+    for name in PROVENANCE_PACKAGES:
+        try:
+            versions[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+    return {"git_commit": commit, "versions": versions}
 
 
 def tracing_enabled() -> bool:
@@ -92,6 +123,7 @@ class RunSettings:
             "backend": backend.backend,
             "model": backend.model,
             "think": backend.think,
+            "effort": backend.effort,
             "temperature": backend.temperature,
             "mode": self.mode,
             "plan_protocol": self.protocol,
@@ -148,6 +180,7 @@ def run_task(
         "finish_reason": run.finish_reason,
         "error": "; ".join(notes) or None,
         "response_text": run.response_text[:MAX_RESPONSE_CHARS],
+        **provenance(),
     }
 
 
