@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from graspgraph.actions import ToolCall
 from graspgraph.bench.cli import main as bench_main
@@ -8,87 +9,128 @@ from graspgraph.bench.pricing import Price, load_prices, price_for
 from graspgraph.bench.runner import read_records, run_benchmark, run_task
 from graspgraph.bench.summary import latest_records, summarize
 from graspgraph.planner import FakeBackend, make_backend
-from graspgraph.planner.backends import PlannerBackend
+from graspgraph.planner.backends import FAKE_POLICIES, PlannerBackend
 from graspgraph.tasks import FAMILY_NAMES, get_task, start_episode
 
 FREE = Price(0.0, 0.0)
 
 
 def _scripted(calls):
-    return FakeBackend(lambda task: list(calls))
+    return FakeBackend(lambda task: list(calls))  # the plan as steps; the fake formats it per protocol
 
 
 def _first(family):
     return get_task(f"{family.replace('_', '-')}-000")
 
 
-def test_oracle_fake_scores_100_percent_one_task_per_family():
+@pytest.mark.parametrize("protocol", ["submit_plan", "multi_call"])
+def test_oracle_fake_scores_100_percent_one_task_per_family(protocol):
     backend = make_backend("fake", "oracle")
-    records = [run_task(_first(f), backend, FREE) for f in FAMILY_NAMES]
+    records = [run_task(_first(f), backend, FREE, protocol=protocol) for f in FAMILY_NAMES]
     assert all(r["success"] for r in records), [(r["task_id"], r["outcome_type"], r["detail"]) for r in records]
     assert {r["outcome_type"] for r in records} == {"success", "asked_correctly", "refused_correctly"}
     json.dumps(records)  # every record is plain JSON
 
 
-def test_wrong_object_fake_is_scored_wrong_object():
-    backend = make_backend("fake", "wrong-object")
-    for family in ("pick_place", "stack", "spatial"):
-        record = run_task(_first(family), backend, FREE)
-        assert record["success"] is False
-        assert record["outcome_type"] == "wrong_object", (family, record["detail"])
+def test_records_hold_the_planned_step_count_and_raw_plan():
+    task = _first("tower")
+    record = run_task(task, make_backend("fake", "oracle"), FREE)
+    assert record["plan_protocol"] == "submit_plan" and record["prompt_version"] == "open-v4-submit-plan"
+    assert record["planned_steps"] == 4
+    assert record["raw_plan"] == [{"tool": c.name, "args": c.args} for c in task.oracle]
+    assert [c["name"] for c in record["tool_calls"]] == ["submit_plan"]
+    assert record["plan_error"] is None
+
+    legacy = run_task(task, make_backend("fake", "oracle"), FREE, protocol="multi_call")
+    assert legacy["prompt_version"] == "open-v3-multi-call" and legacy["planned_steps"] == 4
+    assert legacy["raw_plan"] == [c.to_dict() for c in task.oracle]
+
+    bad = run_task(task, _scripted([ToolCall("pick", {})]), FREE)
+    assert bad["planned_steps"] == 1 and "missing ['obj_name']" in bad["plan_error"]
 
 
-def test_no_tool_calls_fake_is_scored():
-    record = run_task(_first("stack"), make_backend("fake", "no-tools"), FREE)
-    assert (record["success"], record["outcome_type"], record["tool_calls"]) == (False, "no_tool_calls", [])
+def _objects_of(task, kind):
+    return [o["name"] for o in start_episode(task).start_state["objects"] if o["kind"] == kind]
 
 
-@pytest.mark.parametrize(
-    "task_id, calls, outcome",
-    [
-        ("ambiguous-000", [ToolCall("ask_clarification", {"question": "Which?"})], "asked_correctly"),
-        ("ambiguous-000", [ToolCall("refuse", {"reason": "no"})], "should_have_asked"),
-        ("ambiguous-000", [ToolCall("move_home")], "acted_when_should_not"),
-        ("impossible-000", [ToolCall("refuse", {"reason": "no such block"})], "refused_correctly"),
-        ("impossible-000", [ToolCall("ask_clarification", {"question": "Which?"})], "should_have_refused"),
-        ("stack-000", [ToolCall("ask_clarification", {"question": "Sure?"})], "should_have_acted"),
-        ("stack-000", [ToolCall("pick", {"obj_name": "red block"})], "hallucinated_object"),
-    ],
-)
-def test_outcome_types_for_non_motion_plans(task_id, calls, outcome):
-    record = run_task(get_task(task_id), _scripted(calls), FREE)
-    assert record["outcome_type"] == outcome
-    assert record["success"] is (outcome in {"asked_correctly", "refused_correctly"})
+def _other_bowl(task):
+    target = task.oracle[1].args["obj_name"]
+    return next(b for b in _objects_of(task, "bowl") if b != target)
 
 
-def test_acting_on_an_ambiguous_task_is_scored():
-    task = get_task("ambiguous-000")
-    objects = start_episode(task).start_state["objects"]
-    block = next(o["name"] for o in objects if o["kind"] == "block")
-    bowl = next(o["name"] for o in objects if o["kind"] == "bowl")
-    calls = [ToolCall("pick", {"obj_name": block}), ToolCall("place_on", {"obj_name": bowl})]
-    assert run_task(task, _scripted(calls), FREE)["outcome_type"] == "acted_when_should_not"
+def _wrong_tower(task):
+    a, b, c = task.predicate.bottom_to_top
+    return [ToolCall("pick", {"obj_name": a}), ToolCall("place_on", {"obj_name": b}),
+            ToolCall("pick", {"obj_name": c}), ToolCall("place_on", {"obj_name": a})]
 
 
-def test_wrong_object_primitive_failure_and_bad_placement_are_told_apart():
-    spatial = _first("spatial")
-    pick = spatial.oracle[0]
-    untouched = run_task(spatial, _scripted([ToolCall("move_home")]), FREE)
-    assert untouched["outcome_type"] == "wrong_object"  # never touched the block it was asked to move
-    off_table = run_task(spatial, _scripted([pick, ToolCall("place_at", {"x": 0.30, "y": 1.0})]), FREE)
-    assert off_table["outcome_type"] == "primitive_failed"
+def _broken(task):
+    raise ConnectionError("model server unreachable")
 
-    tower = _first("tower")
-    a, b, c = tower.predicate.bottom_to_top
-    wrong_order = [
-        ToolCall("pick", {"obj_name": a}),
-        ToolCall("place_on", {"obj_name": b}),
-        ToolCall("pick", {"obj_name": c}),
-        ToolCall("place_on", {"obj_name": a}),
-    ]
-    record = run_task(tower, _scripted(wrong_order), FREE)
-    assert all(r["success"] for r in record["primitive_results"])
-    assert record["outcome_type"] == "bad_placement"
+
+REPEAT_LOOP = "ResponseError: prediction aborted, token repeat limit reached (status code: 500)"
+
+
+def _looping(task):
+    raise RuntimeError(REPEAT_LOOP)
+
+
+def _ran_out_of_tokens(task):
+    # What Gemma did with nested step schemas: output up to the cap, nothing parseable.
+    return AIMessage(content="", response_metadata={"done_reason": "length"})
+
+
+def _silent(task):
+    return AIMessage(content="", response_metadata={"done_reason": "stop"})
+
+
+# (expected outcome_type, task id, policy: task -> planned steps, protocol)
+LABEL_CASES = [
+    ("success", "pick-place-000", lambda t: list(t.oracle), "submit_plan"),
+    ("wrong_object", "pick-place-000", lambda t: FAKE_POLICIES["wrong-object"](t), "submit_plan"),
+    ("wrong_object", "pick-place-000", lambda t: [t.oracle[0], ToolCall("place_on", {"obj_name": _other_bowl(t)})], "submit_plan"),
+    ("incomplete_plan", "tower-000", lambda t: FAKE_POLICIES["first-step"](t), "multi_call"),  # the Gemma bug
+    ("incomplete_plan", "tower-000", lambda t: FAKE_POLICIES["first-step"](t), "submit_plan"),
+    ("incomplete_plan", "tower-000", lambda t: list(t.oracle[:2]), "submit_plan"),  # one of two stacks
+    ("incomplete_plan", "count-001", lambda t: list(t.oracle[:-2]), "submit_plan"),  # one block short
+    ("incomplete_plan", "spatial-000", lambda t: [ToolCall("move_home")], "submit_plan"),
+    ("bad_placement", "tower-000", _wrong_tower, "submit_plan"),
+    ("primitive_failed", "spatial-000", lambda t: [t.oracle[0], ToolCall("place_at", {"x": 0.30, "y": 1.0})], "submit_plan"),
+    ("invalid_plan", "stack-000", lambda t: [t.oracle[0], ToolCall("place_on", {})], "submit_plan"),
+    ("invalid_plan", "stack-000", lambda t: [t.oracle[0], ToolCall("grab", {"obj_name": "block_red"})], "multi_call"),
+    ("no_tool_calls", "stack-000", lambda t: [], "submit_plan"),
+    ("no_tool_calls", "stack-000", _silent, "submit_plan"),
+    ("hallucinated_object", "stack-000", lambda t: [ToolCall("pick", {"obj_name": "red block"})], "submit_plan"),
+    ("asked_correctly", "ambiguous-000", lambda t: [ToolCall("ask_clarification", {"question": "Which?"})], "submit_plan"),
+    ("should_have_asked", "ambiguous-000", lambda t: [ToolCall("refuse", {"reason": "no"})], "submit_plan"),
+    ("acted_when_should_not", "ambiguous-000", lambda t: [ToolCall("move_home")], "submit_plan"),
+    (
+        "acted_when_should_not",
+        "ambiguous-000",
+        lambda t: [ToolCall("pick", {"obj_name": _objects_of(t, "block")[0]}),
+                   ToolCall("place_on", {"obj_name": _objects_of(t, "bowl")[0]})],
+        "submit_plan",
+    ),
+    ("refused_correctly", "impossible-000", lambda t: [ToolCall("refuse", {"reason": "no such block"})], "submit_plan"),
+    ("should_have_refused", "impossible-000", lambda t: [ToolCall("ask_clarification", {"question": "?"})], "submit_plan"),
+    ("should_have_acted", "stack-000", lambda t: [ToolCall("ask_clarification", {"question": "Sure?"})], "submit_plan"),
+    ("llm_error", "stack-000", _broken, "submit_plan"),
+    ("degenerate_output", "stack-000", _looping, "submit_plan"),
+    ("degenerate_output", "stack-000", _ran_out_of_tokens, "submit_plan"),
+]
+
+
+@pytest.mark.parametrize("outcome, task_id, policy, protocol", LABEL_CASES)
+def test_every_outcome_label_with_a_fake_llm(outcome, task_id, policy, protocol):
+    record = run_task(get_task(task_id), FakeBackend(policy), FREE, protocol=protocol)
+    assert record["outcome_type"] == outcome, (record["detail"], record["plan_error"], record["primitive_results"])
+    assert record["success"] is (outcome in {"success", "asked_correctly", "refused_correctly"})
+
+
+def test_every_outcome_label_is_covered():
+    from graspgraph.bench.scoring import OutcomeType
+
+    assert {case[0] for case in LABEL_CASES} == set(OutcomeType.__args__)
 
 
 def test_cost_comes_from_usage_and_the_price_table():
@@ -163,3 +205,77 @@ def test_cli_rejects_unknown_choices(tmp_path):
         bench_main(["--backend", "fake", "--model", "nonsense", "--out", str(tmp_path / "x.jsonl")])
     with pytest.raises(SystemExit, match="unknown families"):
         bench_main(["--backend", "fake", "--families", "juggling", "--out", str(tmp_path / "x.jsonl")])
+
+
+def test_resume_is_per_protocol_and_reads_legacy_records_as_multi_call(tmp_path):
+    out = tmp_path / "r.jsonl"
+    backend = make_backend("fake", "oracle")
+    run_benchmark(TASKS[:1], backend, out, FREE, protocol="multi_call", log=lambda _: None)
+    record = read_records(out)[0]
+    del record["plan_protocol"]  # what a file written before this field existed looks like
+    out.write_text(json.dumps(record) + "\n")
+    again = run_benchmark(TASKS[:1], backend, out, FREE, protocol="multi_call", log=lambda _: None)
+    assert (again.ran, again.skipped) == (0, 1)
+    other = run_benchmark(TASKS[:1], backend, out, FREE, protocol="submit_plan", log=lambda _: None)
+    assert (other.ran, other.skipped) == (1, 0)
+
+
+def test_cli_plan_protocol_flag(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    bench_main(["--backend", "fake", "--model", "first-step", "--task-ids", "tower-000", "--plan-protocol", "multi_call"])
+    assert "protocol=multi_call" in capsys.readouterr().out
+    [record] = read_records(tmp_path / "results" / "fake-first-step_open_multi_call.jsonl")
+    assert (record["plan_protocol"], record["outcome_type"], record["planned_steps"]) == ("multi_call", "incomplete_plan", 1)
+    bench_main(["--backend", "fake", "--model", "oracle", "--task-ids", "tower-000"])  # default protocol
+    [record] = read_records(tmp_path / "results" / "fake-oracle_open_submit_plan.jsonl")
+    assert (record["plan_protocol"], record["success"]) == ("submit_plan", True)
+    assert "mean planned steps 4.0" in summarize(tmp_path / "results" / "fake-oracle_open_submit_plan.jsonl")
+
+
+def test_repetition_loops_are_model_failures_and_not_retried(tmp_path):
+    out = tmp_path / "r.jsonl"
+    looping = FakeBackend(_looping, model="oracle")
+    run_benchmark(TASKS[:2], looping, out, FREE, log=lambda _: None)
+    assert [r["outcome_type"] for r in read_records(out)] == ["degenerate_output"] * 2
+    # Files written before degenerate_output existed logged loops as llm_error; those are not retried either.
+    records = read_records(out)
+    records[1]["outcome_type"] = "llm_error"
+    out.write_text("".join(json.dumps(r) + "\n" for r in records))
+    report = run_benchmark(TASKS[:2], make_backend("fake", "oracle"), out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (0, 2)
+
+
+def test_a_new_prompt_version_is_not_skipped_on_resume(tmp_path):
+    out = tmp_path / "r.jsonl"
+    backend = make_backend("fake", "oracle")
+    run_benchmark(TASKS[:1], backend, out, FREE, log=lambda _: None)
+    [record] = read_records(out)
+    record["prompt_version"] = "open-v2-submit-plan"  # a run made with the previous prompt
+    out.write_text(json.dumps(record) + "\n")
+    report = run_benchmark(TASKS[:1], backend, out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (1, 0)
+    table = summarize(out)  # one table per configuration, never averaged together
+    assert table.count("== ") == 2 and "prompt_version=open-v2-submit-plan" in table and "prompt_version=open-v4-submit-plan" in table
+
+
+def test_ollama_output_is_capped():
+    assert make_backend("ollama").chat_model.num_predict == 2048
+    assert make_backend("ollama", think=True).chat_model.num_predict == 8192  # thinking counts against the cap
+    assert make_backend("ollama", max_tokens=500).chat_model.num_predict == 500
+
+
+def test_finish_reason_is_recorded():
+    assert run_task(get_task("stack-000"), FakeBackend(_ran_out_of_tokens), FREE)["finish_reason"] == "length"
+    assert run_task(get_task("stack-000"), make_backend("fake", "oracle"), FREE)["finish_reason"] is None
+
+
+def test_temperature_is_recorded_and_keeps_runs_apart(tmp_path):
+    out = tmp_path / "r.jsonl"
+    default, cold = make_backend("fake", "oracle"), make_backend("fake", "oracle")
+    cold.temperature = 0.0
+    run_benchmark(TASKS[:1], default, out, FREE, log=lambda _: None)
+    report = run_benchmark(TASKS[:1], cold, out, FREE, log=lambda _: None)
+    assert (report.ran, report.skipped) == (1, 0)  # a different temperature is a different run
+    assert sorted(str(r["temperature"]) for r in read_records(out)) == ["0.0", "None"]
+    assert make_backend("ollama", temperature=0.2).temperature == 0.2
+    assert summarize(out).count("== ") == 2

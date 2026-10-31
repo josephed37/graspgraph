@@ -93,30 +93,54 @@ How success is checked:
 
 ## Running the benchmark
 
-The open-loop planner (`graspgraph.planner`) is a LangGraph graph: build_prompt -> plan -> execute. One model call returns the whole plan as tool calls, and execute runs them in order without checking or replanning, stopping at `ask_clarification` or `refuse`. Object arguments are enums of the scene's object names. Prompts live in `planner/prompts.py` (`PROMPT_VERSION` is written into every record).
+The open-loop planner (`graspgraph.planner`) is a LangGraph graph: build_prompt -> plan -> validate -> execute.
+- **Plan**: one model call returns the whole plan.
+- **Validate**: checks every step before anything moves. A plan with any bad step is rejected whole.
+- **Execute**: runs the steps in order without checking or replanning, stopping at `ask_clarification` or `refuse`.
+
+Object arguments are enums of the scene's object names. Prompts live in `planner/prompts.py`, and each protocol's prompt version is written into every record.
+
+Plan protocols (`--plan-protocol`):
+- **`submit_plan`** (default): the model makes exactly one call, `submit_plan(steps=[{"tool": "pick", "args": {"obj_name": "block_red"}}, ...])`, or a single `ask_clarification` / `refuse` call. Many models, Gemma 4 included, make only one tool call per turn, so the whole plan has to fit in one call.
+- **`multi_call`**: the original protocol, where each step is its own tool call, kept for comparison. Gemma 4 returned about one call per task under it, so multi-step tasks stopped after the first primitive.
 
 ```bash
 # Local Gemma via Ollama (free). Pull the model first: ollama pull gemma4:12b
 uv run graspgraph-bench --backend ollama --model gemma4:12b --mode open --families all \
-    --no-think --out results/gemma4-12b_open.jsonl
-uv run graspgraph-bench --backend ollama --model gemma4:12b --think --out results/gemma4-12b_open_think.jsonl
+    --no-think --out results/gemma4-12b_open_submit_plan.jsonl
+uv run graspgraph-bench --backend ollama --model gemma4:12b --think --out results/gemma4-12b_open_submit_plan_think.jsonl
+uv run graspgraph-bench --backend ollama --model gemma4:12b --plan-protocol multi_call   # the original protocol
 
 # Claude (needs ANTHROPIC_API_KEY); --max-usd is the spend cap, default 1.00
 export ANTHROPIC_API_KEY=...
-uv run graspgraph-bench --backend anthropic --model claude-haiku-5-5 --max-usd 1.00 --out results/haiku-5-5_open.jsonl
+uv run graspgraph-bench --backend anthropic --model claude-haiku-5-5 --max-usd 1.00 --out results/haiku-5-5_open_submit_plan.jsonl
 uv run graspgraph-bench --backend anthropic --model claude-sonnet-5-5 --limit 50 --max-usd 2.00
 
-# No model at all: scripted plans (oracle, wrong-object, no-tools) for dry runs
+# No model at all: scripted plans (oracle, wrong-object, no-tools, first-step) for dry runs
 uv run graspgraph-bench --backend fake --model oracle
 
 uv run python scripts/summarize.py results/*.jsonl
 ```
 
-Other options: `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (Anthropic, default 1024), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
+Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (output cap; defaults: Anthropic 1024, Ollama 2048, or 8192 with `--think` because thinking counts against it), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
 
-- **Output**: one JSON line per task run, with success, `outcome_type`, the tool calls, every primitive result, tokens, `cost_usd` and model latency. The outcome types are `success`, `wrong_object`, `bad_placement`, `primitive_failed`, `no_tool_calls`, `hallucinated_object`, `asked_correctly`, `refused_correctly`, `should_have_asked`, `should_have_refused`, `should_have_acted`, `acted_when_should_not` and `llm_error`.
-- **Resume**: rerunning with the same `--out` skips runs already recorded, so a crashed run continues where it stopped. Runs that hit an `llm_error` are retried.
+- **Output**: one JSON line per task run, with success, `outcome_type`, `plan_protocol`, `planned_steps`, `raw_plan` (exactly what the model submitted), `plan_error`, `finish_reason` (why the model stopped, e.g. `length` at the token cap), the tool calls, every primitive result, tokens, `cost_usd` and model latency. The default file name includes the protocol.
+- **Outcome types**:
+  - **Success**: `success`, `asked_correctly`, `refused_correctly`.
+  - **Failures on "act" tasks**:
+    - `wrong_object`: acted on an object the instruction did not refer to.
+    - `primitive_failed`: a primitive refused or failed.
+    - `incomplete_plan`: used only referred objects, but stopped before the task was done (left one out, placed too few blocks, or ended holding a block).
+    - `bad_placement`: anything else.
+  - **Plan problems**: `invalid_plan` (a malformed step: unknown tool, missing or bad arguments; nothing runs), `hallucinated_object` (an object name not in the scene), `no_tool_calls`.
+  - **Ask and refuse mistakes**: `should_have_asked`, `should_have_refused`, `should_have_acted`, `acted_when_should_not`.
+  - **Model failures**: `degenerate_output` (the model got stuck repeating itself, or hit the output cap without producing a usable plan).
+  - **Model call failed**: `llm_error` (network or API trouble).
+- **Resume**: rerunning with the same `--out` skips runs already recorded with the same model, protocol and prompt version, so a crashed run continues where it stopped.
+  - Only `llm_error` runs are retried. Model failures such as `degenerate_output` are not, so no task gets extra attempts.
+  - `summarize.py` prints one table per configuration (model, protocol, prompt version) found in a file.
 - **Spend cap**: before each run, the money already spent in the file plus the most expensive run so far is compared with `--max-usd`, and the run stops cleanly before crossing it. Prices are in `src/graspgraph/bench/prices.toml`; Ollama costs $0.
+- **Debugging empty responses**: `uv run python scripts/debug_ollama.py --task-ids tower-001 --repeats 3` sends a task's exact request to Ollama and prints the raw reply (text, thinking, tool calls, `done_reason`), with and without streaming. Raw chunks are saved to `outputs/ollama_debug/`.
 - **LangSmith tracing** is on only when both `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are set (optionally `LANGSMITH_PROJECT`). Otherwise nothing is sent anywhere.
 
 ## License
