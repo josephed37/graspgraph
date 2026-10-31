@@ -44,15 +44,18 @@ def positions(state: State) -> dict[str, np.ndarray]:
     return {o["name"]: np.array(o["position"], dtype=float) for o in state["objects"]}
 
 
-def _in_bowl(block: np.ndarray, bowl: np.ndarray) -> bool:
+def in_bowl(block: np.ndarray, bowl: np.ndarray) -> bool:
+    """A block centre resting inside a bowl's footprint, low in the bowl."""
     return bool(np.all(np.abs(block[:2] - bowl[:2]) < IN_BOWL_XY) and abs(block[2] - IN_BOWL_Z) < Z_TOL)
 
 
-def _on_top(top: np.ndarray, base: np.ndarray) -> bool:
+def on_top(top: np.ndarray, base: np.ndarray) -> bool:
+    """A block centre resting directly on another block."""
     return bool(np.linalg.norm(top[:2] - base[:2]) < STACK_XY_TOL and abs(top[2] - base[2] - 2 * BLOCK_HALF) < Z_TOL)
 
 
-def _on_table(block: np.ndarray) -> bool:
+def on_table(block: np.ndarray) -> bool:
+    """A block centre at table-resting height."""
     return bool(abs(block[2] - ON_TABLE_Z) < Z_TOL)
 
 
@@ -72,7 +75,7 @@ class InBowl:
         p = positions(final)
         if final["held"] == self.block:
             return Verdict(False, f"{self.block} is still in the gripper")
-        ok = _in_bowl(p[self.block], p[self.bowl])
+        ok = in_bowl(p[self.block], p[self.bowl])
         return Verdict(ok, f"{self.block} {'is' if ok else 'is not'} in {self.bowl}")
 
 
@@ -85,7 +88,7 @@ class OnTop:
 
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)
-        ok = _on_top(p[self.top], p[self.base])
+        ok = on_top(p[self.top], p[self.base])
         return Verdict(ok, f"{self.top} {'is' if ok else 'is not'} on {self.base}")
 
 
@@ -97,10 +100,10 @@ class Tower:
 
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)
-        if not _on_table(p[self.bottom_to_top[0]]):
+        if not on_table(p[self.bottom_to_top[0]]):
             return Verdict(False, f"{self.bottom_to_top[0]} is not on the table")
         for base, top in zip(self.bottom_to_top, self.bottom_to_top[1:]):
-            if not _on_top(p[top], p[base]):
+            if not on_top(p[top], p[base]):
                 return Verdict(False, f"{top} is not on {base}")
         return Verdict(True, "tower is " + " < ".join(self.bottom_to_top))
 
@@ -113,7 +116,7 @@ class AllInBowls:
 
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)
-        missing = [f"{b} not in {w}" for b, w in self.assignment if not _in_bowl(p[b], p[w])]
+        missing = [f"{b} not in {w}" for b, w in self.assignment if not in_bowl(p[b], p[w])]
         return Verdict(not missing, "; ".join(missing) or "every block is in its bowl")
 
 
@@ -128,7 +131,7 @@ class BowlCounts:
         blocks = [o["name"] for o in final["objects"] if o["kind"] == "block"]
         wrong = []
         for bowl, n in self.counts:
-            have = sum(_in_bowl(p[b], p[bowl]) for b in blocks)
+            have = sum(in_bowl(p[b], p[bowl]) for b in blocks)
             if have != n:
                 wrong.append(f"{bowl} holds {have}, wanted {n}")
         return Verdict(not wrong, "; ".join(wrong) or "every bowl holds the right number")
@@ -144,7 +147,7 @@ class InRegion:
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)[self.block]
         region = REGIONS[self.region]
-        ok = region.contains(float(p[0]), float(p[1]), REGION_SLACK) and _on_table(p)
+        ok = region.contains(float(p[0]), float(p[1]), REGION_SLACK) and on_table(p)
         return Verdict(ok, f"{self.block} {'is' if ok else 'is not'} on the table in the {region.label}")
 
 
@@ -157,7 +160,7 @@ class InLine:
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)
         pts = [p[b] for b in self.left_to_right]
-        if not all(_on_table(q) for q in pts):
+        if not all(on_table(q) for q in pts):
             return Verdict(False, "not every block is resting on the table")
         ys = [q[1] for q in pts]
         if any(a - b < LINE_MIN_GAP for a, b in zip(ys, ys[1:])):
@@ -178,7 +181,7 @@ class BackAt:
 
     def check(self, start: State, final: State) -> Verdict:
         p = positions(final)[self.block]
-        if np.hypot(p[0] - self.x, p[1] - self.y) > UNDO_XY_TOL or not _on_table(p):
+        if np.hypot(p[0] - self.x, p[1] - self.y) > UNDO_XY_TOL or not on_table(p):
             return Verdict(False, f"{self.block} is not back at ({self.x:.3f}, {self.y:.3f})")
         others = [o["name"] for o in start["objects"] if o["name"] != self.block]
         moved = _moved(start, final, others)
