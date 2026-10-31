@@ -23,16 +23,32 @@ from graspgraph.planner.backends import PlannerBackend, is_model_failure
 from graspgraph.planner.closed_loop import DEFAULT_MAX_REPLANS, DEFAULT_MAX_STEPS, run_closed_loop
 from graspgraph.planner.graph import run_open_loop
 from graspgraph.planner.plans import PlanProtocol
-from graspgraph.planner.prompts import CLOSED_LOOP_PROMPT_VERSION, PROMPT_VERSIONS
+from graspgraph.planner.prompts import CLOSED_LOOP_PROMPT_VERSION, PROMPT_VERSIONS, REPLAN_PROMPT_VERSION
 from graspgraph.tasks import Task, start_episode
 
 CONFIG_FIELDS = (
-    "backend", "model", "think", "temperature", "mode", "plan_protocol", "prompt_version", "fault_rate", "max_replans"
+    "backend",
+    "model",
+    "think",
+    "temperature",
+    "mode",
+    "plan_protocol",
+    "prompt_version",
+    "fault_rate",
+    "fault_seed",
+    "max_replans",
 )
 KEY_FIELDS = ("task_id", "repeat", *CONFIG_FIELDS)
 # Records written before these fields existed all used the original one-call-per-step protocol,
 # the provider's default sampling, open loop and no faults.
-LEGACY_DEFAULTS = {"plan_protocol": "multi_call", "temperature": None, "fault_rate": 0.0, "max_replans": None}
+LEGACY_DEFAULTS = {
+    "plan_protocol": "multi_call",
+    "temperature": None,
+    "mode": "open",
+    "fault_rate": 0.0,
+    "fault_seed": 0,
+    "max_replans": None,
+}
 MODES = ("open", "closed")
 MAX_RESPONSE_CHARS = 2000  # keep a model's prose (useful for no_tool_calls) without bloating logs
 
@@ -53,7 +69,8 @@ class RunSettings:
 
     mode: str = "open"  # "open" or "closed"
     protocol: PlanProtocol = "submit_plan"
-    fault_rate: float = 0.0  # share of act tasks that get an injected fault
+    fault_rate: float = 0.0  # share of eligible tasks that get an injected fault
+    fault_seed: int = 0
     max_replans: int = DEFAULT_MAX_REPLANS  # closed loop only
     max_steps: int = DEFAULT_MAX_STEPS  # closed loop only
 
@@ -65,7 +82,9 @@ class RunSettings:
 
     @property
     def prompt_version(self) -> str:
-        return CLOSED_LOOP_PROMPT_VERSION if self.mode == "closed" else PROMPT_VERSIONS[self.protocol]
+        if self.mode == "closed":
+            return f"{CLOSED_LOOP_PROMPT_VERSION}+{REPLAN_PROMPT_VERSION}"
+        return PROMPT_VERSIONS[self.protocol]
 
     def config(self, backend: PlannerBackend) -> dict[str, Any]:
         """The CONFIG_FIELDS values for runs with this backend."""
@@ -78,6 +97,7 @@ class RunSettings:
             "plan_protocol": self.protocol,
             "prompt_version": self.prompt_version,
             "fault_rate": self.fault_rate,
+            "fault_seed": self.fault_seed,
             "max_replans": self.max_replans if self.mode == "closed" else None,
         }
 
@@ -87,8 +107,8 @@ def run_task(
 ) -> dict[str, Any]:
     """Plan and execute one task, score it from the final simulator state, return its record."""
     episode = start_episode(task)
-    kind = choose_fault(task, repeat, settings.fault_rate)
-    injector = FaultInjector.for_run(task, repeat, kind) if kind else None
+    fault = choose_fault(task, repeat, settings.fault_rate, settings.fault_seed)
+    injector = FaultInjector.for_run(task, fault, repeat, settings.fault_seed) if fault else None
     if settings.mode == "closed":
         run = run_closed_loop(backend, episode, injector, settings.max_replans, settings.max_steps)
     else:
@@ -97,7 +117,7 @@ def run_task(
     verdict = episode.verdict()
     outcome = classify(task, run, verdict, episode.start_state, final)
     notes = [n for n in (run.error, price.note(run.input_tokens)) if n]
-    fault = injector.record() if injector else None
+    faults = injector.record() if injector else {"fault_injected": False, "fault_type": None, "fault_step": None}
     return {
         "task_id": task.task_id,
         "family": task.family,
@@ -115,8 +135,10 @@ def run_task(
         "llm_calls": run.llm_calls,
         "replans": run.replans,
         "plans": run.plans,
-        "fault": fault,
-        "recovered": bool(fault and fault["triggered"] and outcome in SUCCESSES),
+        "steps_executed": run.steps_executed,
+        "mismatches": run.mismatches,
+        **faults,
+        "recovered": faults["fault_injected"] and outcome in SUCCESSES,
         "primitive_results": run.results,
         "steps": sum(r["steps"] for r in run.results),
         "input_tokens": run.input_tokens,

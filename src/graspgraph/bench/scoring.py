@@ -11,6 +11,7 @@ from graspgraph.tasks.predicates import State, Unchanged, Verdict
 
 OutcomeType = Literal[
     "success",
+    "recovered_success",  # closed loop: succeeded after at least one replan
     "wrong_object",  # acted on an object the instruction did not refer to
     "incomplete_plan",  # only the right objects, but the plan stopped before the task was done
     "bad_placement",
@@ -25,10 +26,11 @@ OutcomeType = Literal[
     "should_have_acted",  # asked or refused on a task that just needed doing
     "acted_when_should_not",
     "degenerate_output",  # the model got stuck repeating itself, or hit the token cap with no plan
-    "replan_budget_exhausted",  # closed loop: ran out of replans or steps before finishing
+    "replan_budget_exceeded",  # closed loop: out of replans, or the same failure repeated without progress
+    "step_budget_exceeded",  # closed loop: out of executed steps
     "llm_error",  # the model call failed for another reason (network, API error); retried on resume
 ]
-SUCCESSES = {"success", "asked_correctly", "refused_correctly"}
+SUCCESSES = {"success", "recovered_success", "asked_correctly", "refused_correctly"}
 TRUNCATED = {"length", "max_tokens"}  # finish reasons for hitting the output-token cap
 PLACING = ("place_on", "place_at")
 
@@ -53,8 +55,10 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
     """
     if run.stop in ("llm_error", "degenerate_output"):
         return run.stop
-    if run.stop == "budget_exhausted":
-        return "replan_budget_exhausted"
+    if run.stop in ("replan_budget", "no_progress"):
+        return "replan_budget_exceeded"
+    if run.stop == "step_budget":
+        return "step_budget_exceeded"
     if run.stop == "no_tool_calls":
         # Hitting the cap with nothing usable means the model ran away (a plan needs a few
         # hundred tokens), the same failure as a loop the server aborts.
@@ -75,7 +79,7 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
     if run.stop in ("asked", "refused"):
         return "should_have_acted"
     if verdict.success:
-        return "success"
+        return "recovered_success" if run.replans else "success"
     kinds = {o["name"]: o["kind"] for o in start["objects"]}
     touched, referred = _objects(executed, task, kinds), _objects(task.oracle, task, kinds)
     if touched - referred:

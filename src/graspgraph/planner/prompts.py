@@ -103,6 +103,17 @@ _CLOSED_LOOP_RULE = (
 assert _OPEN_LOOP_RULE in SUBMIT_PLAN_SYSTEM_PROMPT
 CLOSED_LOOP_SYSTEM_PROMPT = SUBMIT_PLAN_SYSTEM_PROMPT.replace(_OPEN_LOOP_RULE, _CLOSED_LOOP_RULE)
 
+# Replanning is a fresh call with its own prompt: what was done, what went wrong, the scene now.
+REPLAN_PROMPT_VERSION = "replan-v1"
+_REPLAN_RULE = (
+    "- You are replanning. The robot was running a plan and a step did not have the effect it should. You are "
+    "told what has been done, what went wrong and the scene as it is now. Put every step still needed in one "
+    "submit_plan call, starting from the current scene. Do not redo steps whose effect is still in place. If the "
+    "instruction can no longer be carried out, call refuse.\n"
+)
+REPLAN_SYSTEM_PROMPT = SUBMIT_PLAN_SYSTEM_PROMPT.replace(_OPEN_LOOP_RULE, _REPLAN_RULE)
+REPLAN_PROGRESS_HEADER = "Progress so far (JSON):"
+
 
 def build_user_message(instruction: str, scene: dict[str, Any], history: list[dict[str, Any]]) -> str:
     """The instruction, the current scene from get_scene() and, if any, the moves made so far."""
@@ -113,4 +124,24 @@ def build_user_message(instruction: str, scene: dict[str, Any], history: list[di
     ]
     if history:
         parts += [HISTORY_INTRO, json.dumps(history, indent=1)]
+    return "\n\n".join(parts)
+
+
+def build_replan_message(
+    instruction: str,
+    scene: dict[str, Any],
+    history: list[dict[str, Any]],
+    mismatch: str,
+    progress: dict[str, Any],
+) -> str:
+    """The replan request: the instruction, what went wrong, the current scene, history and progress."""
+    parts = [
+        f"Instruction: {instruction}",
+        f"What went wrong: {mismatch}",
+        "Scene now (from get_scene(); positions are object centres in metres):",
+        json.dumps(scene, indent=1),
+    ]
+    if history:
+        parts += [HISTORY_INTRO, json.dumps(history, indent=1)]
+    parts += [REPLAN_PROGRESS_HEADER, json.dumps(progress, indent=1)]
     return "\n\n".join(parts)

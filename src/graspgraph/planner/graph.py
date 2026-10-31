@@ -27,7 +27,16 @@ from graspgraph.sim.robot import PrimitiveResult, Robot
 from graspgraph.tasks import Episode
 
 StopReason = Literal[
-    "completed", "asked", "refused", "no_tool_calls", "invalid_plan", "degenerate_output", "llm_error", "budget_exhausted"
+    "completed",
+    "asked",
+    "refused",
+    "no_tool_calls",
+    "invalid_plan",
+    "degenerate_output",
+    "llm_error",
+    "replan_budget",  # closed loop: ran out of replans
+    "step_budget",  # closed loop: ran out of executed steps
+    "no_progress",  # closed loop: the same step failed twice in a row from the same scene
 ]
 
 
@@ -70,6 +79,8 @@ class PlanRun:
     llm_calls: int = 1
     replans: int = 0  # model calls after the first (closed loop only)
     plans: list[Any] = field(default_factory=list)  # every plan as submitted, raw
+    mismatches: list[str] = field(default_factory=list)  # closed loop: every verify mismatch, in order
+    steps_executed: int = 0  # motion steps that actually ran
 
     @property
     def plan_error_kind(self) -> PlanErrorKind | None:
@@ -181,7 +192,9 @@ def run_open_loop(
 ) -> PlanRun:
     """Plan and execute one episode. Model errors, bad plans and primitive failures are recorded, never raised."""
     backend.prepare(episode.task)
-    return plan_run(build_open_loop_graph(backend, episode, protocol, hook).invoke({}), protocol)
+    run = plan_run(build_open_loop_graph(backend, episode, protocol, hook).invoke({}), protocol)
+    run.steps_executed = sum(r["name"] not in STOP_TOOLS for r in run.results)
+    return run
 
 
 def finish_reason(response: AIMessage) -> str | None:

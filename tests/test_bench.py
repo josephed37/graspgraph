@@ -7,9 +7,10 @@ from graspgraph.actions import ToolCall
 from graspgraph.bench.cli import main as bench_main
 from graspgraph.bench.pricing import Price, load_prices, price_for
 from graspgraph.bench.runner import RunSettings, read_records, run_benchmark, run_task
-from graspgraph.bench.summary import latest_records, summarize
+from graspgraph.bench.scoring import SUCCESSES
+from graspgraph.bench.summary import compare, latest_records, summarize
 from graspgraph.planner import FakeBackend, make_backend
-from graspgraph.planner.backends import FAKE_POLICIES, PlannerBackend
+from graspgraph.planner.backends import FAKE_POLICIES, PlannerBackend, oracle_repair
 from graspgraph.tasks import FAMILY_NAMES, get_task, start_episode
 
 FREE = Price(0.0, 0.0)
@@ -115,23 +116,31 @@ LABEL_CASES = [
     ("should_have_refused", "impossible-000", lambda t: [ToolCall("ask_clarification", {"question": "?"})], "submit_plan"),
     ("should_have_acted", "stack-000", lambda t: [ToolCall("ask_clarification", {"question": "Sure?"})], "submit_plan"),
     ("llm_error", "stack-000", _broken, "submit_plan"),
-    (  # closed loop: a plan that can never work, retried until the replans run out
-        "replan_budget_exhausted",
-        "stack-000",
-        lambda t: [ToolCall("place_on", {"obj_name": t.oracle[1].args["obj_name"]})],
-        RunSettings(mode="closed", max_replans=2),
-    ),
     ("degenerate_output", "stack-000", _looping, "submit_plan"),
     ("degenerate_output", "stack-000", _ran_out_of_tokens, "submit_plan"),
+    (  # closed loop: the same impossible step, repeated from the same scene
+        "replan_budget_exceeded",
+        "stack-000",
+        lambda t: [ToolCall("place_on", {"obj_name": t.oracle[1].args["obj_name"]})],
+        RunSettings(mode="closed"),
+    ),
+    ("step_budget_exceeded", "tower-000", lambda t: list(t.oracle), RunSettings(mode="closed", max_steps=2)),
+    (  # closed loop: a first plan that stops after the pick, then the oracle's repair
+        "recovered_success",
+        "stack-000",
+        lambda t: [t.oracle[0], ToolCall("place_on", {"obj_name": "bowl_nowhere"})],
+        RunSettings(mode="closed"),
+    ),
 ]
 
 
 @pytest.mark.parametrize("outcome, task_id, policy, protocol", LABEL_CASES)
 def test_every_outcome_label_with_a_fake_llm(outcome, task_id, policy, protocol):
     settings = protocol if isinstance(protocol, RunSettings) else RunSettings(protocol=protocol)
-    record = run_task(get_task(task_id), FakeBackend(policy), FREE, settings=settings)
+    repair = oracle_repair if outcome == "recovered_success" else None
+    record = run_task(get_task(task_id), FakeBackend(policy, repair=repair), FREE, settings=settings)
     assert record["outcome_type"] == outcome, (record["detail"], record["plan_error"], record["primitive_results"])
-    assert record["success"] is (outcome in {"success", "asked_correctly", "refused_correctly"})
+    assert record["success"] is (outcome in SUCCESSES)
 
 
 def test_every_outcome_label_is_covered():
@@ -286,3 +295,20 @@ def test_temperature_is_recorded_and_keeps_runs_apart(tmp_path):
     assert sorted(str(r["temperature"]) for r in read_records(out)) == ["0.0", "None"]
     assert make_backend("ollama", temperature=0.2).temperature == 0.2
     assert summarize(out).count("== ") == 2
+
+
+def test_summarize_reads_old_and_new_files_and_compares_them(tmp_path):
+    old = tmp_path / "old.jsonl"  # a week-2 style record: none of the closed-loop or fault fields
+    record = run_task(get_task("stack-000"), make_backend("fake", "oracle"), FREE)
+    for key in ("fault_injected", "fault_type", "fault_step", "fault_detail", "recovered", "replans", "llm_calls",
+                "plans", "steps_executed", "mismatches", "mode", "fault_rate", "fault_seed", "max_replans", "plan_protocol"):
+        record.pop(key, None)
+    old.write_text(json.dumps(record) + "\n")
+    new = tmp_path / "new.jsonl"
+    run_benchmark([get_task("stack-000")], make_backend("fake", "oracle"), new, FREE,
+                  settings=RunSettings(mode="closed", fault_rate=1.0), log=lambda _: None)
+    assert "mean replans per task 0.00" in summarize(old) and "with faults 0/0" in summarize(old)
+    assert "recovery rate 1/1 (100.0%)" in summarize(new)
+    table = compare([old, new])
+    assert "== comparison" in table and "stack" in table and "with faults" in table
+    assert compare([old]) == ""
