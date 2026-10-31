@@ -140,6 +140,7 @@ Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower
   - Only `llm_error` runs are retried. Model failures such as `degenerate_output` are not, so no task gets extra attempts.
   - `summarize.py` prints one table per configuration (model, protocol, prompt version) found in a file.
 - **Spend cap**: before each run, the money already spent in the file plus the most expensive run so far is compared with `--max-usd`, and the run stops cleanly before crossing it. Prices are in `src/graspgraph/bench/prices.toml`; Ollama costs $0.
+- **Debugging empty responses**: `uv run python scripts/debug_ollama.py --task-ids tower-001 --repeats 3` sends a task's exact request to Ollama and prints the raw reply (text, thinking, tool calls, `done_reason`), with and without streaming. Raw chunks are saved to `outputs/ollama_debug/`.
 - **LangSmith tracing** is on only when both `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are set (optionally `LANGSMITH_PROJECT`). Otherwise nothing is sent anywhere.
 
 ## License
