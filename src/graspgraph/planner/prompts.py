@@ -87,6 +87,22 @@ Rules
 
 SYSTEM_PROMPTS: dict[PlanProtocol, str] = {"multi_call": MULTI_CALL_SYSTEM_PROMPT, "submit_plan": SUBMIT_PLAN_SYSTEM_PROMPT}
 
+# Closed loop: the same tools as submit_plan, but steps are checked as they run and the model
+# is told what went wrong, with the current scene, so it can submit a new plan.
+CLOSED_LOOP_PROMPT_VERSION = "closed-v1-submit-plan"
+_OPEN_LOOP_RULE = (
+    "- Put every step in one submit_plan call, in the order they must run. You will not see any results and you "
+    "get no second turn, so a plan that stops early leaves the task unfinished.\n"
+)
+_CLOSED_LOOP_RULE = (
+    "- Put every step in one submit_plan call, in the order they must run. The robot checks each step as it runs. "
+    "If a step fails, or the plan finishes but an earlier result no longer holds (for example a block was moved), "
+    "you get a report with the current scene: then submit a new plan for what is left, starting from the scene as "
+    "it is now. You have a limited number of new plans.\n"
+)
+assert _OPEN_LOOP_RULE in SUBMIT_PLAN_SYSTEM_PROMPT
+CLOSED_LOOP_SYSTEM_PROMPT = SUBMIT_PLAN_SYSTEM_PROMPT.replace(_OPEN_LOOP_RULE, _CLOSED_LOOP_RULE)
+
 
 def build_user_message(instruction: str, scene: dict[str, Any], history: list[dict[str, Any]]) -> str:
     """The instruction, the current scene from get_scene() and, if any, the moves made so far."""

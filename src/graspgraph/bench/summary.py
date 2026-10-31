@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from graspgraph.bench.runner import LEGACY_DEFAULTS, read_records, run_key
+from graspgraph.bench.runner import CONFIG_FIELDS, LEGACY_DEFAULTS, read_records, run_key
 
 
 def latest_records(path: Path) -> list[dict[str, Any]]:
@@ -19,9 +19,6 @@ def latest_records(path: Path) -> list[dict[str, Any]]:
 
 def _rate(ok: int, n: int) -> str:
     return f"{ok}/{n} ({ok / n:.1%})" if n else "0/0"
-
-
-CONFIG_FIELDS = ("backend", "model", "think", "temperature", "mode", "plan_protocol", "prompt_version")
 
 
 def _config(record: dict[str, Any]) -> str:
@@ -60,5 +57,11 @@ def _table(records: list[dict[str, Any]]) -> str:
     cost = sum(r["cost_usd"] for r in records)
     planned = [r["planned_steps"] for r in records if "planned_steps" in r]
     steps = f"mean planned steps {sum(planned) / len(planned):.1f} | " if planned else ""
+    faults = [r for r in records if (r.get("fault") or {}).get("triggered")]
+    if faults:
+        recovered = sum(r["recovered"] for r in faults)
+        lines += ["", f"faults triggered {len(faults)}: recovered {_rate(recovered, len(faults))}"]
+    if any(r.get("mode") == "closed" for r in records):
+        lines += [f"mean model calls {sum(r['llm_calls'] for r in records) / len(records):.2f} (replans included)"]
     lines += ["", f"{steps}mean latency {latency:.2f}s | tokens in {tokens_in:,} out {tokens_out:,} | cost ${cost:.4f}"]
     return "\n".join(lines)

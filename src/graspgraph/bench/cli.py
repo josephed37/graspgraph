@@ -5,6 +5,7 @@
     uv run graspgraph-bench --backend anthropic --model claude-haiku-5-5 --max-usd 0.50
     uv run graspgraph-bench --backend fake --model oracle          # no network: scripted plans
     uv run graspgraph-bench --backend ollama --plan-protocol multi_call   # the original protocol, for comparison
+    uv run graspgraph-bench --backend ollama --mode closed --fault-rate 0.3   # verify + replan, with faults
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ import sys
 from pathlib import Path
 
 from graspgraph.bench.pricing import load_prices, price_for
-from graspgraph.bench.runner import run_benchmark, tracing_enabled
+from graspgraph.bench.runner import MODES, RunSettings, run_benchmark, tracing_enabled
 from graspgraph.planner.backends import DEFAULT_MAX_TOKENS, DEFAULT_MODELS, FAKE_POLICIES, make_backend
+from graspgraph.planner.closed_loop import DEFAULT_MAX_REPLANS, DEFAULT_MAX_STEPS
 from graspgraph.planner.plans import PLAN_PROTOCOLS
 from graspgraph.tasks import FAMILY_NAMES, build_suite, get_task
 
@@ -29,7 +31,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model",
         help=f"model name; defaults: {DEFAULT_MODELS}. Fake policies: {', '.join(FAKE_POLICIES)}",
     )
-    parser.add_argument("--mode", choices=["open"], default="open", help="planner mode (closed loop comes in week 3)")
+    parser.add_argument(
+        "--mode", choices=MODES, default="open", help="open: one plan, run blind; closed: verify each step and replan"
+    )
+    parser.add_argument(
+        "--fault-rate", type=float, default=0.0, help="share of act tasks that get an injected fault (roadmap: 0.3)"
+    )
+    parser.add_argument("--max-replans", type=int, default=DEFAULT_MAX_REPLANS, help="closed loop: new plans allowed")
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="closed loop: executed steps allowed")
     parser.add_argument(
         "--plan-protocol",
         choices=PLAN_PROTOCOLS,
@@ -65,6 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             tasks = build_suite(None if args.families == ["all"] else args.families)
         price = price_for(load_prices(), args.backend, model)
+        settings = RunSettings(args.mode, args.plan_protocol, args.fault_rate, args.max_replans, args.max_steps)
         backend = make_backend(
             args.backend, model, think=args.think, max_tokens=args.max_tokens, ollama_url=args.ollama_url,
             temperature=args.temperature,
@@ -74,16 +84,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.limit is not None:
         tasks = tasks[: args.limit]
     slug = model.replace(":", "-").replace("/", "-")
-    out = args.out or Path("results") / f"{args.backend}-{slug}_{args.mode}_{args.plan_protocol}.jsonl"
+    faults = f"_faults{round(args.fault_rate * 100)}" if args.fault_rate > 0 else ""
+    out = args.out or Path("results") / f"{args.backend}-{slug}_{args.mode}_{args.plan_protocol}{faults}.jsonl"
 
     print(
         f"{len(tasks)} tasks x {args.repeats} repeats with {args.backend}/{model} (think={backend.think}, "
-        f"temperature={backend.temperature if backend.temperature is not None else 'default'}, protocol={args.plan_protocol}), "
+        f"temperature={backend.temperature if backend.temperature is not None else 'default'}, "
+        f"mode={args.mode}, protocol={args.plan_protocol}, fault rate={args.fault_rate:.0%}), "
         f"cap ${args.max_usd:.2f}, LangSmith tracing {'on' if tracing_enabled() else 'off'} -> {out}"
     )
-    report = run_benchmark(
-        tasks, backend, out, price, repeats=args.repeats, max_usd=args.max_usd, mode=args.mode, protocol=args.plan_protocol
-    )
+    report = run_benchmark(tasks, backend, out, price, repeats=args.repeats, max_usd=args.max_usd, settings=settings)
     print(
         f"done: {report.ran} run, {report.skipped} already recorded, ${report.spent_usd:.4f} spent in total"
         + (" (stopped by the spend cap)" if report.stopped_by_cap else "")

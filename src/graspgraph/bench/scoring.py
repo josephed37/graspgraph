@@ -25,6 +25,7 @@ OutcomeType = Literal[
     "should_have_acted",  # asked or refused on a task that just needed doing
     "acted_when_should_not",
     "degenerate_output",  # the model got stuck repeating itself, or hit the token cap with no plan
+    "replan_budget_exhausted",  # closed loop: ran out of replans or steps before finishing
     "llm_error",  # the model call failed for another reason (network, API error); retried on resume
 ]
 SUCCESSES = {"success", "asked_correctly", "refused_correctly"}
@@ -52,6 +53,8 @@ def classify(task: Task, run: PlanRun, verdict: Verdict, start: State, final: St
     """
     if run.stop in ("llm_error", "degenerate_output"):
         return run.stop
+    if run.stop == "budget_exhausted":
+        return "replan_budget_exhausted"
     if run.stop == "no_tool_calls":
         # Hitting the cap with nothing usable means the model ran away (a plan needs a few
         # hundred tokens), the same failure as a loop the server aborts.

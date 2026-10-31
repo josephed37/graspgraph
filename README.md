@@ -125,7 +125,7 @@ uv run python scripts/summarize.py results/*.jsonl
 Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (output cap; defaults: Anthropic 1024, Ollama 2048, or 8192 with `--think` because thinking counts against it), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
 
 - **Output**: one JSON line per task run, with success, `outcome_type`, `plan_protocol`, `planned_steps`, `raw_plan` (exactly what the model submitted), `plan_error`, `finish_reason` (why the model stopped, e.g. `length` at the token cap), the tool calls, every primitive result, tokens, `cost_usd` and model latency. The default file name includes the protocol.
-- **Outcome types**:
+- **Outcome types** (closed loop adds `replan_budget_exhausted`):
   - **Success**: `success`, `asked_correctly`, `refused_correctly`.
   - **Failures on "act" tasks**:
     - `wrong_object`: acted on an object the instruction did not refer to.
@@ -142,6 +142,26 @@ Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower
 - **Spend cap**: before each run, the money already spent in the file plus the most expensive run so far is compared with `--max-usd`, and the run stops cleanly before crossing it. Prices are in `src/graspgraph/bench/prices.toml`; Ollama costs $0.
 - **Debugging empty responses**: `uv run python scripts/debug_ollama.py --task-ids tower-001 --repeats 3` sends a task's exact request to Ollama and prints the raw reply (text, thinking, tool calls, `done_reason`), with and without streaming. Raw chunks are saved to `outputs/ollama_debug/`.
 - **LangSmith tracing** is on only when both `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are set (optionally `LANGSMITH_PROJECT`). Otherwise nothing is sent anywhere.
+
+## Closed loop and fault injection
+
+`--mode closed` runs the planner as build_prompt -> plan -> validate -> execute_step -> verify, one step at a time, with a replan branch:
+- **Verify:** after every step, its expected effect is checked against the scene (holding the block; the block resting in the bowl, on the block or at the spot). When the plan finishes, every placement still in force is checked again, which catches a block moved after it was placed. The checks only describe the planner's own steps; the task's success predicate stays hidden.
+- **Replan:** a failed step, an undone effect or a rejected plan goes back to the model as the answer to its `submit_plan` call. The report carries the failed step, the reason, the steps done and not done, and the current scene, and the model submits a new plan from there.
+- **Budgets:** `--max-replans` (default 3) and `--max-steps` (24 executed steps) stop loops. Running out scores as `replan_budget_exhausted`.
+
+`--fault-rate 0.3` injects a seeded fault into about 30% of the act tasks, the same ones in open and closed mode:
+- **`drop`:** the block slips out of the gripper early in the carry.
+- **`displace`:** a block just put in a bowl or on the table is moved elsewhere before the next step.
+
+Records gain `fault`, `recovered`, `llm_calls`, `replans` and every submitted plan, and the summary shows the recovery rate.
+
+```bash
+uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --mode closed --fault-rate 0.3
+uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --fault-rate 0.3   # open loop, same faults
+```
+
+With the scripted oracle (`--backend fake`), the 27 triggered faults are recovered 0/27 in open loop and 27/27 in closed loop.
 
 ## License
 
