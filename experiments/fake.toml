@@ -1,0 +1,60 @@
+# FAKE copy of main.toml: every backend replaced by the scripted fake model, for checking the
+# whole pipeline offline (no Ollama, no API key, no cost). Results from it are FAKE.
+# The fake "models" stand in for the real ones: oracle for Gemma, wrong-object for Haiku and
+# first-step for Sonnet, so the report has differences to show. One repeat each.
+#
+#   uv run graspgraph-matrix plan experiments/main.toml        # every run, with estimates
+#   uv run graspgraph-matrix run experiments/main.toml --yes   # cheapest configs first
+#
+# Every config writes one JSONL (both modes in it) and resumes if interrupted. Open and
+# closed runs of the same task and repeat get the identical fault (same fault_seed), so the
+# comparison is paired. tasks = "all" (110 tasks) or a file of task ids, relative to this file.
+
+results_dir = "results/fake"
+max_usd = 8.00  # global cap across every config, smoke run and calibration; --max-usd overrides
+
+[[config]]
+name = "gemma-main"
+backend = "fake"
+model = "oracle"
+think = false
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "all"
+out = "results/fake/gemma-main.jsonl"
+
+[[config]]
+name = "gemma-think"
+backend = "fake"
+model = "oracle"
+think = true
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "all"
+out = "results/fake/gemma-think.jsonl"
+
+[[config]]
+name = "haiku-main"
+backend = "fake"
+model = "wrong-object"
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "all"
+out = "results/fake/haiku-main.jsonl"
+
+[[config]]
+name = "sonnet-subset"
+backend = "fake"
+model = "first-step"
+modes = ["closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "subsets/sonnet50.txt"
+out = "results/fake/sonnet-subset.jsonl"

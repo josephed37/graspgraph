@@ -1,0 +1,63 @@
+# The week-4 benchmark matrix (issue #1). Edit freely; see docs/benchmark.md.
+#
+#   uv run graspgraph-matrix plan experiments/main.toml        # every run, with estimates
+#   uv run graspgraph-matrix run experiments/main.toml --yes   # cheapest configs first
+#
+# Every config writes one JSONL (both modes in it) and resumes if interrupted. Open and
+# closed runs of the same task and repeat get the identical fault (same fault_seed), so the
+# comparison is paired. tasks = "all" (110 tasks) or a file of task ids, relative to this file.
+
+results_dir = "results"
+max_usd = 8.00  # global cap across every config, smoke run and calibration; --max-usd overrides
+
+[[config]]
+name = "gemma-main"
+backend = "ollama"
+model = "gemma4:12b"
+think = false
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 3
+tasks = "all"
+out = "results/gemma-main.jsonl"
+
+[[config]]
+name = "gemma-think"
+backend = "ollama"
+model = "gemma4:12b"
+think = true
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "all"
+out = "results/gemma-think.jsonl"
+
+[[config]]
+name = "haiku-main"
+backend = "anthropic"
+model = "claude-haiku-5-5"
+# effort / thinking / max_tokens default per model (planner/backends.py, ANTHROPIC_REASONING):
+# Haiku 5.5 runs with thinking disabled and no effort setting.
+modes = ["open", "closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 3
+tasks = "all"
+out = "results/haiku-main.jsonl"
+
+[[config]]
+name = "sonnet-subset"
+backend = "anthropic"
+model = "claude-sonnet-5-5"
+# Sonnet 5.5 defaults to effort "high"; it runs at effort "low" with adaptive thinking (it
+# cannot be disabled on this model) and a 2048-token output cap.
+effort = "low"
+thinking = "adaptive"
+modes = ["closed"]
+faults = 0.3
+fault_seed = 0
+repeats = 1
+tasks = "subsets/sonnet50.txt"
+out = "results/sonnet-subset.jsonl"

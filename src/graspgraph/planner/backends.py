@@ -290,5 +290,7 @@ def make_backend(
     if backend == "fake":
         if model not in FAKE_POLICIES:
             raise ValueError(f"unknown fake policy '{model}'; choose from {list(FAKE_POLICIES)}")
-        return FakeBackend(FAKE_POLICIES[model], model=model, repair=FAKE_REPAIRS.get(model))
+        fake = FakeBackend(FAKE_POLICIES[model], model=model, repair=FAKE_REPAIRS.get(model))
+        fake.think = think or None  # mirror the config, so think-on and think-off runs stay apart
+        return fake
     raise ValueError(f"unknown backend '{backend}'")
