@@ -125,7 +125,7 @@ uv run python scripts/summarize.py results/*.jsonl
 Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower`, `--task-ids stack-007 undo-003`, `--limit N`, `--repeats N`, `--max-tokens` (output cap; defaults: Anthropic 1024, Ollama 2048, or 8192 with `--think` because thinking counts against it), `--temperature` (default: the provider's own, so repeats measure variance), `--ollama-url`.
 
 - **Output**: one JSON line per task run, with success, `outcome_type`, `plan_protocol`, `planned_steps`, `raw_plan` (exactly what the model submitted), `plan_error`, `finish_reason` (why the model stopped, e.g. `length` at the token cap), the tool calls, every primitive result, tokens, `cost_usd` and model latency. The default file name includes the protocol.
-- **Outcome types** (closed loop adds `replan_budget_exhausted`):
+- **Outcome types** (closed loop adds `recovered_success`, `replan_budget_exceeded` and `step_budget_exceeded`):
   - **Success**: `success`, `asked_correctly`, `refused_correctly`.
   - **Failures on "act" tasks**:
     - `wrong_object`: acted on an object the instruction did not refer to.
@@ -143,25 +143,65 @@ Other options: `--plan-protocol submit_plan|multi_call`, `--families stack tower
 - **Debugging empty responses**: `uv run python scripts/debug_ollama.py --task-ids tower-001 --repeats 3` sends a task's exact request to Ollama and prints the raw reply (text, thinking, tool calls, `done_reason`), with and without streaming. Raw chunks are saved to `outputs/ollama_debug/`.
 - **LangSmith tracing** is on only when both `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are set (optionally `LANGSMITH_PROJECT`). Otherwise nothing is sent anywhere.
 
-## Closed loop and fault injection
+## Closed-loop planning and recovery
 
-`--mode closed` runs the planner as build_prompt -> plan -> validate -> execute_step -> verify, one step at a time, with a replan branch:
-- **Verify:** after every step, its expected effect is checked against the scene (holding the block; the block resting in the bowl, on the block or at the spot). When the plan finishes, every placement still in force is checked again, which catches a block moved after it was placed. The checks only describe the planner's own steps; the task's success predicate stays hidden.
-- **Replan:** a failed step, an undone effect or a rejected plan goes back to the model as the answer to its `submit_plan` call. The report carries the failed step, the reason, the steps done and not done, and the current scene, and the model submits a new plan from there.
-- **Budgets:** `--max-replans` (default 3) and `--max-steps` (24 executed steps) stop loops. Running out scores as `replan_budget_exhausted`.
+`--mode closed` checks every step against the simulator and replans when reality does not match the plan. Open loop (`--mode open`, the default) is unchanged, so the two can be compared on the same tasks and faults.
 
-`--fault-rate 0.3` injects a seeded fault into about 30% of the act tasks, the same ones in open and closed mode:
-- **`drop`:** the block slips out of the gripper early in the carry.
-- **`displace`:** a block just put in a bowl or on the table is moved elsewhere before the next step.
-
-Records gain `fault`, `recovered`, `llm_calls`, `replans` and every submitted plan, and the summary shows the recovery rate.
-
-```bash
-uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --mode closed --fault-rate 0.3
-uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --fault-rate 0.3   # open loop, same faults
+```
+build_prompt -> plan -> validate -> execute ONE step -> verify -> next step ... -> end
+                          ^                                |
+                          +------------ replan <-----------+   (on a mismatch)
 ```
 
-With the scripted oracle (`--backend fake`), the 27 triggered faults are recovered 0/27 in open loop and 27/27 in closed loop.
+**Verify** (`planner/verify.py`). Each step has an expected effect, checked against `get_scene()` right after it runs:
+- `pick(X)`: X is held and clearly above the table.
+- `place_on(T)`: nothing is held, and X rests on or in T.
+- `place_at(x, y)`: nothing is held, and X rests within 2 cm of (x, y).
+- `move_home()`: the arm is at home.
+
+The tolerances are the task predicates' own. A mismatch is a short, factual message the model can act on: *"Expected block_red to be held after pick(block_red), but block_red is on the table at (0.52, -0.10). Nothing is held."* A failed primitive is a mismatch too, carrying its own message. When a plan finishes, every placement still in force is checked once more.
+
+**Replan.** A fresh model call with its own prompt (`replan-v1` in `planner/prompts.py`), carrying:
+- the instruction
+- the current scene
+- the move history
+- the mismatch
+- the progress so far: completed steps, the failed step, and the steps that did not run
+
+The model answers with a new `submit_plan`, or `ask_clarification` / `refuse`, using the same tools and object-name enums as planning. A rejected (invalid) plan is reported the same way and gets another try.
+
+**Budgets:**
+- **`--max-replans`** (default 3): running out ends the run as `replan_budget_exceeded`.
+- **`--max-steps`** (default 20 executed steps): running out ends the run as `step_budget_exceeded`.
+- **No progress:** the same step failing twice in a row from the same scene (positions to the centimetre, same held block) also ends as `replan_budget_exceeded`, since another replan would only repeat it.
+- **Success after at least one replan** is scored `recovered_success`.
+
+**Faults** (`bench/faults.py`). Faults are injected around primitive calls, so the planner only learns of them through verify:
+- **`drop`:** the held block slips out early in a carry and falls to the table.
+- **`displace`:** just before a pick, the block to be picked is moved to another free spot.
+- **`knock`:** just after a successful placement, the placed block is moved off its target.
+
+Relocated blocks go to a free, reachable table spot. Whether a run gets a fault, its type, and which pick or placement it hits all derive from `(task_id, repeat, fault_seed)`, so every model and both modes face the same faults. Only tasks with a manipulation step are eligible: ask and refuse tasks never get a fault.
+
+**Records** gain `mode`, `replans`, `steps_executed`, `mismatches`, `fault_injected`, `fault_type`, `fault_step` and `recovered`. `summarize.py` shows:
+- mean replans per task
+- success with and without faults
+- the recovery rate (success among faulted runs)
+- given several files, an open-vs-closed comparison per family
+
+```bash
+# Gemma, closed loop with faults, and open loop with the same faults
+uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --mode closed --faults 0.3
+uv run graspgraph-bench --backend ollama --model gemma4:12b --no-think --mode open --faults 0.3
+uv run python scripts/summarize.py results/ollama-gemma4-12b_open_submit_plan_faults30.jsonl \
+    results/ollama-gemma4-12b_closed_submit_plan_faults30.jsonl
+
+# No model at all: the scripted oracle (with a simple repair) and a recovery video
+uv run graspgraph-bench --backend fake --mode closed --faults 0.3
+uv run python scripts/demo_recovery.py            # outputs/demo_recovery.mp4 (a drop, then the recovery)
+```
+
+`--faults` without a value means 0.3; `--fault-seed N` draws a different set of faults.
 
 ## License
 
