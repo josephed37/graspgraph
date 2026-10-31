@@ -196,3 +196,49 @@ def test_get_scene_is_json_and_tracks_held_block(robot):
     assert after["held"] == block
     lifted = next(o for o in after["objects"] if o["name"] == block)
     assert lifted["position"][2] > entry["position"][2] + 0.1
+
+
+# ------------------------------------------------- awkward poses (e.g. after a dropped block)
+
+
+def _put(robot, name, xyz, quat=(1, 0, 0, 0)):
+    """Teleport a block to a pose, at rest."""
+    joint = robot.model.body(name).jntadr[0]
+    qpos, dof = robot.model.jnt_qposadr[joint], robot.model.jnt_dofadr[joint]
+    robot.data.qpos[qpos : qpos + 7] = [*xyz, *quat]
+    robot.data.qvel[dof : dof + 6] = 0
+    mujoco.mj_forward(robot.model, robot.data)
+
+
+def test_pick_a_block_lying_on_its_side():
+    robot = Robot(build_scene(SceneConfig(seed=0)))
+    block = _names(robot.scene, "block")[0]
+    # On its side (90 degrees about y), then turned 0.5 rad about the vertical.
+    on_side = np.empty(4)
+    mujoco.mju_mulQuat(on_side, [np.cos(0.25), 0, 0, np.sin(0.25)], [np.cos(np.pi / 4), 0, np.sin(np.pi / 4), 0])
+    _put(robot, block, (*robot.data.body(block).xpos[:2], TABLE_HEIGHT + BLOCK_HALF), on_side)
+    assert robot._grasp_yaw(block) == pytest.approx(0.5, abs=1e-6)  # read from a horizontal edge
+    result = robot.pick(block)
+    assert result.success, result.message
+
+
+@pytest.mark.parametrize("offset", [(0.017, 0.0), (0.0, -0.017)])
+def test_pick_a_block_off_centre_in_a_bowl(offset):
+    """The open fingers would hit a wall along one axis: the gripper turns to the other faces."""
+    robot = Robot(build_scene(SceneConfig(seed=0)))
+    block, bowl = _names(robot.scene, "block")[0], _names(robot.scene, "bowl")[0]
+    centre = robot.data.body(bowl).xpos
+    _put(robot, block, (centre[0] + offset[0], centre[1] + offset[1], TABLE_HEIGHT + BOWL_WALL_T + BLOCK_HALF))
+    robot._step_for(0.3)
+    result = robot.pick(block)
+    assert result.success, result.message
+
+
+def test_pick_a_block_pressed_against_the_outside_of_a_bowl():
+    robot = Robot(build_scene(SceneConfig(seed=0)))
+    block, bowl = _names(robot.scene, "block")[0], _names(robot.scene, "bowl")[0]
+    centre = robot.data.body(bowl).xpos
+    _put(robot, block, (centre[0] - (BOWL_HALF + 0.005 + BLOCK_HALF + 0.002), centre[1], TABLE_HEIGHT + BLOCK_HALF))
+    robot._step_for(0.3)
+    result = robot.pick(block)
+    assert result.success, result.message

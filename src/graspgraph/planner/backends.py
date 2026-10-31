@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from graspgraph.actions import STOP_TOOLS, ToolCall
 from graspgraph.tasks import Task
@@ -113,6 +114,7 @@ def anthropic_backend(
 
 
 Policy = Callable[[Task], list[ToolCall] | AIMessage]
+Repair = Callable[[Task, dict[str, Any]], list[ToolCall] | AIMessage]  # (task, replan progress) -> new plan
 
 
 class FakeBackend(PlannerBackend):
@@ -120,12 +122,21 @@ class FakeBackend(PlannerBackend):
 
     A policy returns the plan as a list of steps, which the fake formats for the protocol the
     offered tools imply (one submit_plan call, or one call per step), or a ready AIMessage
-    when a test needs exact control over the raw output.
+    when a test needs exact control over the raw output. In the closed loop, a replan request
+    goes to `repair` with the loop's report (or to the policy again if there is no repair).
     """
 
-    def __init__(self, policy: Policy, model: str = "custom", input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        policy: Policy,
+        model: str = "custom",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        repair: Repair | None = None,
+    ) -> None:
         super().__init__("fake", model, None)
         self.policy = policy
+        self.repair = repair
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
         self._task: Task | None = None
@@ -136,7 +147,11 @@ class FakeBackend(PlannerBackend):
     def generate(self, messages: list[BaseMessage], tools: list[dict[str, Any]]) -> AIMessage:
         if self._task is None:
             raise RuntimeError("FakeBackend.prepare(task) must be called before generate()")
-        planned = self.policy(self._task)
+        progress = _replan_progress(messages)
+        if progress is not None and self.repair is not None:
+            planned = self.repair(self._task, progress)
+        else:
+            planned = self.policy(self._task)
         if isinstance(planned, AIMessage):
             return planned
         offered = {t["function"]["name"] for t in tools}
@@ -154,9 +169,31 @@ class FakeBackend(PlannerBackend):
         )
 
 
+def _replan_progress(messages: list[BaseMessage]) -> dict[str, Any] | None:
+    """The progress block of a closed-loop replan request, if this is one."""
+    from graspgraph.planner.prompts import REPLAN_PROGRESS_HEADER
+
+    last = messages[-1] if messages else None
+    if not isinstance(last, HumanMessage) or REPLAN_PROGRESS_HEADER not in last.content:
+        return None
+    return json.loads(last.content.split(REPLAN_PROGRESS_HEADER, 1)[1])
+
+
 def oracle_policy(task: Task) -> list[ToolCall]:
     """The task's own correct plan."""
     return list(task.oracle)
+
+
+def oracle_repair(task: Task, report: dict[str, Any]) -> list[ToolCall]:
+    """Redo the step that failed (picking its block up again first), then finish the plan.
+
+    Deliberately simple: it does not, for example, unstack a block that has been built on.
+    """
+    if report.get("status") == "plan_rejected" or not report.get("failed_step"):
+        return list(task.oracle)
+    failed = ToolCall(report["failed_step"]["name"], report["failed_step"]["args"])
+    redo = [failed] if failed.name == "pick" else [ToolCall("pick", {"obj_name": report["block"]}), failed]
+    return redo + [ToolCall(s["name"], s["args"]) for s in report.get("remaining_steps", [])]
 
 
 def wrong_object_policy(task: Task) -> list[ToolCall]:
@@ -193,6 +230,7 @@ FAKE_POLICIES: dict[str, Policy] = {
     "no-tools": no_tools_policy,
     "first-step": first_step_policy,
 }
+FAKE_REPAIRS: dict[str, Repair] = {"oracle": oracle_repair}
 
 
 def make_backend(
@@ -215,5 +253,5 @@ def make_backend(
     if backend == "fake":
         if model not in FAKE_POLICIES:
             raise ValueError(f"unknown fake policy '{model}'; choose from {list(FAKE_POLICIES)}")
-        return FakeBackend(FAKE_POLICIES[model], model=model)
+        return FakeBackend(FAKE_POLICIES[model], model=model, repair=FAKE_REPAIRS.get(model))
     raise ValueError(f"unknown backend '{backend}'")

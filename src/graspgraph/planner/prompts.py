@@ -87,6 +87,33 @@ Rules
 
 SYSTEM_PROMPTS: dict[PlanProtocol, str] = {"multi_call": MULTI_CALL_SYSTEM_PROMPT, "submit_plan": SUBMIT_PLAN_SYSTEM_PROMPT}
 
+# Closed loop: the same tools as submit_plan, but steps are checked as they run and the model
+# is told what went wrong, with the current scene, so it can submit a new plan.
+CLOSED_LOOP_PROMPT_VERSION = "closed-v1-submit-plan"
+_OPEN_LOOP_RULE = (
+    "- Put every step in one submit_plan call, in the order they must run. You will not see any results and you "
+    "get no second turn, so a plan that stops early leaves the task unfinished.\n"
+)
+_CLOSED_LOOP_RULE = (
+    "- Put every step in one submit_plan call, in the order they must run. The robot checks each step as it runs. "
+    "If a step fails, or the plan finishes but an earlier result no longer holds (for example a block was moved), "
+    "you get a report with the current scene: then submit a new plan for what is left, starting from the scene as "
+    "it is now. You have a limited number of new plans.\n"
+)
+assert _OPEN_LOOP_RULE in SUBMIT_PLAN_SYSTEM_PROMPT
+CLOSED_LOOP_SYSTEM_PROMPT = SUBMIT_PLAN_SYSTEM_PROMPT.replace(_OPEN_LOOP_RULE, _CLOSED_LOOP_RULE)
+
+# Replanning is a fresh call with its own prompt: what was done, what went wrong, the scene now.
+REPLAN_PROMPT_VERSION = "replan-v1"
+_REPLAN_RULE = (
+    "- You are replanning. The robot was running a plan and a step did not have the effect it should. You are "
+    "told what has been done, what went wrong and the scene as it is now. Put every step still needed in one "
+    "submit_plan call, starting from the current scene. Do not redo steps whose effect is still in place. If the "
+    "instruction can no longer be carried out, call refuse.\n"
+)
+REPLAN_SYSTEM_PROMPT = SUBMIT_PLAN_SYSTEM_PROMPT.replace(_OPEN_LOOP_RULE, _REPLAN_RULE)
+REPLAN_PROGRESS_HEADER = "Progress so far (JSON):"
+
 
 def build_user_message(instruction: str, scene: dict[str, Any], history: list[dict[str, Any]]) -> str:
     """The instruction, the current scene from get_scene() and, if any, the moves made so far."""
@@ -97,4 +124,24 @@ def build_user_message(instruction: str, scene: dict[str, Any], history: list[di
     ]
     if history:
         parts += [HISTORY_INTRO, json.dumps(history, indent=1)]
+    return "\n\n".join(parts)
+
+
+def build_replan_message(
+    instruction: str,
+    scene: dict[str, Any],
+    history: list[dict[str, Any]],
+    mismatch: str,
+    progress: dict[str, Any],
+) -> str:
+    """The replan request: the instruction, what went wrong, the current scene, history and progress."""
+    parts = [
+        f"Instruction: {instruction}",
+        f"What went wrong: {mismatch}",
+        "Scene now (from get_scene(); positions are object centres in metres):",
+        json.dumps(scene, indent=1),
+    ]
+    if history:
+        parts += [HISTORY_INTRO, json.dumps(history, indent=1)]
+    parts += [REPLAN_PROGRESS_HEADER, json.dumps(progress, indent=1)]
     return "\n\n".join(parts)
