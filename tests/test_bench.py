@@ -312,3 +312,23 @@ def test_summarize_reads_old_and_new_files_and_compares_them(tmp_path):
     table = compare([old, new])
     assert "== comparison" in table and "stack" in table and "with faults" in table
     assert compare([old]) == ""
+
+
+def test_claude_reasoning_settings_build_valid_requests():
+    sonnet = make_backend("anthropic", "claude-sonnet-5-5").chat_model._get_request_payload([("user", "hi")])
+    assert sonnet["output_config"] == {"effort": "low"} and sonnet["thinking"] == {"type": "adaptive"}
+    assert sonnet["max_tokens"] == 2048
+    haiku = make_backend("anthropic", "claude-haiku-5-5")
+    payload = haiku.chat_model._get_request_payload([("user", "hi")])
+    assert payload["thinking"] == {"type": "disabled"} and "output_config" not in payload
+    assert (haiku.think, haiku.effort) == (False, None)
+    overridden = make_backend("anthropic", "claude-haiku-5-5", effort="medium", thinking="omit").chat_model
+    assert overridden._get_request_payload([("user", "hi")]).get("thinking") is None
+    with pytest.raises(ValueError, match="unknown thinking mode"):
+        make_backend("anthropic", "claude-haiku-5-5", thinking="sometimes")
+
+
+def test_records_carry_the_effort_commit_and_package_versions():
+    record = run_task(get_task("ambiguous-000"), make_backend("fake", "oracle"), FREE)
+    assert record["effort"] is None
+    assert record["git_commit"] and record["versions"]["graspgraph"] and record["versions"]["mujoco"]

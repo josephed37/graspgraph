@@ -10,12 +10,14 @@ dependencies = [
     "langchain-core>=1.7.0",
     "langchain-ollama>=1.1.0",
     "langgraph>=1.2.17",
+    "matplotlib>=3.11.2",
     "mujoco>=3.3",
     "numpy>=1.26",
 ]
 
 [project.scripts]
 graspgraph-bench = "graspgraph.bench.cli:main"
+graspgraph-matrix = "graspgraph.bench.matrix_cli:main"
 
 [dependency-groups]
 dev = [
