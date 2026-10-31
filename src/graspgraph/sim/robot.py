@@ -36,6 +36,8 @@ GRIPPER_OPEN = 255.0  # actuator8 ctrl: 255 = fingers fully open (8 cm), 0 = clo
 GRIPPER_CLOSED = 0.0
 RELEASE_WIDTH = 0.05  # open only to 5 cm when releasing, so fingers don't hit neighbours
 MAX_FINGER_WIDTH = 0.08
+FINGER_REACH = MAX_FINGER_WIDTH / 2 + 0.008  # open fingertip pads reach this far from the TCP along the closing axis
+FINGER_CLEARANCE = 0.005  # below this gap to an obstacle, pick from the other pair of faces
 
 SAFE_Z = 0.25  # TCP height for moving between objects
 MIN_TCP_Z = TABLE_HEIGHT + 0.012  # fingertips reach ~9 mm below the TCP
@@ -181,7 +183,7 @@ class Robot:
             return PrimitiveResult(False, problem, 0)
 
         pos = self._pos(obj_name)
-        yaw = self._grasp_yaw(obj_name)
+        yaw = self._pick_yaw(obj_name)
         self.open_gripper()
         reached = self._transit(pos, yaw)
         if not reached.success:
@@ -438,12 +440,49 @@ class Robot:
         return normalise_yaw(float(np.arctan2(closing_axis[1], closing_axis[0])))
 
     def _block_yaw(self, name: str) -> float:
+        """Heading of a horizontal edge of the block, so a cube lying on any face still works."""
         rot = self.data.body(name).xmat.reshape(3, 3)
-        return float(np.arctan2(rot[1, 0], rot[0, 0]))
+        axis = rot[:, int(np.argmin(np.abs(rot[2])))]  # the body axis closest to horizontal
+        return float(np.arctan2(axis[1], axis[0]))
 
     def _grasp_yaw(self, name: str) -> float:
         """Gripper yaw lined up with a block's faces; a cube repeats every 90 degrees."""
         return (self._block_yaw(name) + np.pi / 4) % (np.pi / 2) - np.pi / 4
+
+    def _pick_yaw(self, name: str) -> float:
+        """Face-aligned yaw for picking: turn 90 degrees if the open fingers would hit something.
+
+        A block near a bowl wall (say, one that fell in off-centre) can only be gripped across
+        the faces that point away from the wall.
+        """
+        yaw = self._grasp_yaw(name)
+        if self._finger_clearance(name, yaw) >= FINGER_CLEARANCE:
+            return yaw
+        turned = normalise_yaw(yaw + np.pi / 2)
+        return turned if self._finger_clearance(name, turned) > self._finger_clearance(name, yaw) else yaw
+
+    def _finger_clearance(self, name: str, yaw: float) -> float:
+        """Smallest gap between the open fingertips (around block `name`) and a wall or block."""
+        centre = self._pos(name)
+        axis = np.array([np.cos(yaw), np.sin(yaw)])
+        tips = [centre[:2] + side * FINGER_REACH * axis for side in (1, -1)]
+        gaps = [np.inf]
+        for obj in self.scene.objects:
+            if obj.name == name:
+                continue
+            other = self._pos(obj.name)
+            if obj.kind == "block":
+                if other[2] < centre[2] - BLOCK_HALF:  # below the fingertips (e.g. what it is stacked on)
+                    continue
+                gaps += [np.linalg.norm(tip - other[:2]) - BLOCK_HALF * np.sqrt(2) for tip in tips]
+            else:  # bowls are axis-aligned squares with walls of thickness BOWL_WALL_T
+                inner, outer = BOWL_HALF - BOWL_WALL_T / 2, BOWL_HALF + BOWL_WALL_T / 2
+                inside = float(np.max(np.abs(centre[:2] - other[:2]))) < inner
+                for tip in tips:
+                    reach = float(np.max(np.abs(tip - other[:2])))  # square "radius" of the tip around the bowl
+                    # A block in the bowl must keep its fingertips inside the walls, one outside out of them.
+                    gaps.append(inner - reach if inside else reach - outer)
+        return float(min(gaps))
 
     def _check_reachable(self, target: np.ndarray) -> str | None:
         if not np.all(np.isfinite(target)):
