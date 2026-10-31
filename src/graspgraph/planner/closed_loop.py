@@ -28,7 +28,7 @@ from graspgraph.planner.backends import PlannerBackend
 from graspgraph.planner.graph import PlannerState, PlanRun, StepHook, call_model, check_response, plan_run, run_step, stop_for
 from graspgraph.planner.prompts import CLOSED_LOOP_SYSTEM_PROMPT, build_user_message
 from graspgraph.planner.tools import tool_schemas
-from graspgraph.planner.verify import Expectation, expectation_for
+from graspgraph.planner.verify import Expectation, expectation_for, failure_text
 from graspgraph.tasks import Episode
 
 DEFAULT_MAX_REPLANS = 3
@@ -107,8 +107,9 @@ def build_closed_loop_graph(
     def verify(state: ClosedLoopState) -> ClosedLoopState:
         step, result, expected = state["last"]
         scene = robot.get_scene()
-        if not result["success"] or not expected.holds(scene):
-            reason = result["message"] if not result["success"] else f"check failed: expected {expected.description}"
+        problem = expected.mismatch(scene, robot.at_home())
+        if not result["success"] or problem:
+            reason = failure_text(step, result["message"], scene) if not result["success"] else problem
             return {"feedback": _report("step_failed", step, expected.block, reason, state, scene)}
         in_force = [e for e in state["in_force"] if e.block != expected.block]  # moving a block again supersedes
         if step.name != "pick":
@@ -118,10 +119,10 @@ def build_closed_loop_graph(
             if state["motion_steps"] >= max_steps:
                 return {"in_force": in_force, "done_in_plan": done, "stop": "budget_exhausted"}
             return {"in_force": in_force, "done_in_plan": done}
-        broken = [e for e in in_force if not e.holds(scene)]
+        broken = [e for e in in_force if e.mismatch(scene, robot.at_home())]
         if broken:  # the plan finished, but something it did has since been undone
             first = broken[0]
-            reason = f"{first.description} no longer holds"
+            reason = first.mismatch(scene, robot.at_home())
             report = _report("effect_undone", first.step, first.block, reason, {**state, "done_in_plan": done}, scene)
             return {"in_force": in_force, "done_in_plan": done, "feedback": report}
         return {"in_force": in_force, "done_in_plan": done, "stop": "completed"}

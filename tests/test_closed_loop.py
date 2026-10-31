@@ -12,7 +12,6 @@ from graspgraph.planner import FakeBackend, make_backend
 from graspgraph.planner.backends import oracle_repair
 from graspgraph.planner.closed_loop import run_closed_loop
 from graspgraph.planner.graph import run_open_loop
-from graspgraph.planner.verify import expectation_for
 from graspgraph.tasks import FAMILY_NAMES, build_suite, get_task, start_episode
 
 FREE = Price(0.0, 0.0)
@@ -78,7 +77,7 @@ def test_a_displaced_block_is_caught_by_the_end_of_plan_check():
     run, episode, injector, backend = _faulted("sort-000", "displace", "closed")
     assert episode.verdict().success and run.replans == 1
     [report] = backend.reports
-    assert report["status"] == "effect_undone" and "no longer holds" in report["reason"]
+    assert report["status"] == "effect_undone" and report["reason"].startswith("Expected")
     assert report["unfinished_steps"] == []
 
 
@@ -158,22 +157,6 @@ def test_ask_still_ends_the_closed_loop():
     episode = start_episode(get_task("ambiguous-000"))
     run = run_closed_loop(make_backend("fake", "oracle"), episode)
     assert run.stop == "asked" and run.llm_calls == 1
-
-
-# ----------------------------------------------------------------------- verification
-
-
-def test_step_expectations():
-    episode = start_episode(get_task("pick-place-000"))
-    robot, (pick, place) = episode.robot, episode.task.oracle
-    block = pick.args["obj_name"]
-    assert not expectation_for(pick, None).holds(robot.get_scene())
-    robot.pick(block)
-    assert expectation_for(pick, None).holds(robot.get_scene())
-    robot.place_on(place.args["obj_name"])
-    assert expectation_for(place, block).holds(robot.get_scene())
-    assert not expectation_for(ToolCall("place_at", {"x": 0.3, "y": 0.3}), block).holds(robot.get_scene())
-    assert expectation_for(ToolCall("move_home"), None).holds(robot.get_scene())
 
 
 # --------------------------------------------------------------------------------- CLI

@@ -40,6 +40,7 @@ FINGER_REACH = MAX_FINGER_WIDTH / 2 + 0.008  # open fingertip pads reach this fa
 FINGER_CLEARANCE = 0.005  # below this gap to an obstacle, pick from the other pair of faces
 
 SAFE_Z = 0.25  # TCP height for moving between objects
+HOME_TOLERANCE = 0.02  # rad: every arm joint within this of the home pose counts as "at home"
 MIN_TCP_Z = TABLE_HEIGHT + 0.012  # fingertips reach ~9 mm below the TCP
 MAX_REACH = 0.80  # horizontal distance from the base beyond which we don't even try IK
 PLACE_GAP = 0.004  # release a block this far above its resting height
@@ -140,10 +141,17 @@ class Robot:
         q_goal = HOME_CTRL[:ARM_DOF].copy()
         self._follow_joint_path([self.data.ctrl[:ARM_DOF].copy(), q_goal], min_duration=0.0)
         self._settle_arm(q_goal)
-        err = float(np.max(np.abs(self.data.qpos[:ARM_DOF] - q_goal)))
-        if err > 0.02:
+        if not self.at_home():
+            err = self._home_error()
             return PrimitiveResult(False, f"arm stopped {err:.3f} rad short of home; something is blocking it", self._since(start))
         return PrimitiveResult(True, "arm is at home", self._since(start))
+
+    def at_home(self) -> bool:
+        """Whether every arm joint is within HOME_TOLERANCE of the home pose."""
+        return self._home_error() <= HOME_TOLERANCE
+
+    def _home_error(self) -> float:
+        return float(np.max(np.abs(self.data.qpos[:ARM_DOF] - HOME_CTRL[:ARM_DOF])))
 
     def move_to(self, x: float, y: float, z: float, yaw: float = 0.0) -> PrimitiveResult:
         """Move the TCP in a straight line to (x, y, z), gripper pointing down, rotated by `yaw` rad."""
