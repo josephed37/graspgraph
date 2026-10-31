@@ -137,7 +137,7 @@ It works on partial results; configs not run yet are listed.
 
 ```bash
 uv run graspgraph-matrix run experiments/fake.toml
-uv run python scripts/report.py results/fake --out reports/fake
+uv run python scripts/report.py results/fake --out outputs/fake-report   # outputs/ is gitignored
 ```
 
 Everything it produces is labelled **FAKE DATA - not real results**. Don't publish it.
