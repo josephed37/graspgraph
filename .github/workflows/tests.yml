@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      slow:
+        description: "Also run the slow tests (full 110-task oracle check)"
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      # Only the Panda model is needed: a sparse clone is ~45 MB instead of the whole repo.
+      - name: Fetch the Franka Panda from MuJoCo Menagerie
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/google-deepmind/mujoco_menagerie.git third_party/mujoco_menagerie
+          git -C third_party/mujoco_menagerie sparse-checkout set franka_emika_panda
+
+      - run: uv sync --locked
+
+      - name: Tests (scene, IK, primitives, tasks, planner, benchmark)
+        run: uv run pytest
+
+      - name: Slow tests
+        if: ${{ inputs.slow }}
+        run: uv run pytest -m slow
+
+      # A 5-task benchmark with the scripted oracle model: no network, no LLM.
+      - name: Smoke benchmark
+        run: |
+          uv run graspgraph-bench --backend fake --model oracle \
+            --task-ids pick-place-000 stack-000 tower-000 ambiguous-000 undo-000 --out results/smoke.jsonl
+          uv run python scripts/summarize.py results/smoke.jsonl | tee results/smoke.txt
+          grep -q "overall success  5/5" results/smoke.txt
