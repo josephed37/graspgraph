@@ -41,7 +41,8 @@ CALIBRATION_FILE = "calibration.json"
 DEFAULT_INPUT_TOKENS_PER_CALL = 2500  # Gemma's real runs used about 1,600
 DEFAULT_OUTPUT_TOKENS_PER_CALL = {"plain": 500, "thinking": 1500}
 DEFAULT_CALLS_PER_RUN = {"open": 1.0, "closed": 1.5}  # closed: replans after mismatches
-DEFAULT_SECONDS_PER_CALL = {"ollama": 12.0, "anthropic": 5.0, "fake": 0.0}
+DEFAULT_SECONDS_PER_CALL = {"ollama": 12.0, "anthropic": 5.0, "fake": 0.0}  # Gemma no-think measured ~10 s
+THINKING_SLOWDOWN = 3.0  # a thinking model writes far more tokens per call
 SIM_SECONDS_PER_RUN = 1.5  # physics, scene building and scoring
 
 
@@ -171,7 +172,8 @@ def estimate(config: MatrixConfig, mode: str, price: Price, calibration: dict[st
         calls = runs * DEFAULT_CALLS_PER_RUN[mode]
         tokens_in = calls * DEFAULT_INPUT_TOKENS_PER_CALL
         tokens_out = calls * DEFAULT_OUTPUT_TOKENS_PER_CALL["thinking" if config.thinks else "plain"]
-        seconds = calls * DEFAULT_SECONDS_PER_CALL.get(config.backend, 10.0) + runs * SIM_SECONDS_PER_RUN
+        per_call = DEFAULT_SECONDS_PER_CALL.get(config.backend, 10.0) * (THINKING_SLOWDOWN if config.thinks else 1.0)
+        seconds = calls * per_call + runs * SIM_SECONDS_PER_RUN
         basis = "default estimate"
     cost = (tokens_in * price.input + tokens_out * price.output) / 1_000_000
     return Estimate(config.name, mode, runs, calls, tokens_in, tokens_out, cost, seconds, basis)
@@ -452,8 +454,11 @@ def calibrate(
             for r in records
         ],
     }
+    errors = [r for r in records if r["outcome_type"] == "llm_error"]
+    if errors:  # failed calls used no tokens: averaging them in would understate the cost
+        log(f"WARNING: {len(errors)} calibration runs failed ({errors[-1].get('error')}); they are left out")
     for mode in modes:
-        rs = [r for r in records if r["mode"] == mode]
+        rs = [r for r in records if r["mode"] == mode and r["outcome_type"] != "llm_error"]
         if not rs:
             continue
         entry["modes"][mode] = {

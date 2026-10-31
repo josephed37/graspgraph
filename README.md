@@ -93,6 +93,8 @@ How success is checked:
 
 ## Running the benchmark
 
+The full experiment (Gemma, Haiku and Sonnet, open and closed loop, with faults) has its own runbook: [docs/benchmark.md](docs/benchmark.md).
+
 The open-loop planner (`graspgraph.planner`) is a LangGraph graph: build_prompt -> plan -> validate -> execute.
 - **Plan**: one model call returns the whole plan.
 - **Validate**: checks every step before anything moves. A plan with any bad step is rejected whole.
