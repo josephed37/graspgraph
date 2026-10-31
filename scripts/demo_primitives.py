@@ -9,23 +9,10 @@ go home. Uses MUJOCO_GL if set, otherwise EGL with an OSMesa fallback (no displa
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
-
-def choose_gl_backend() -> str:
-    """First offscreen OpenGL backend that can create a context (probed in a subprocess,
-    because MuJoCo binds the backend once at import time)."""
-    for backend in ("egl", "osmesa"):
-        probe = subprocess.run(
-            [sys.executable, "-c", "import mujoco; mujoco.GLContext(16, 16).make_current()"],
-            env={**os.environ, "MUJOCO_GL": backend},
-            capture_output=True,
-        )
-        if probe.returncode == 0:
-            return backend
-    raise RuntimeError("No offscreen OpenGL backend works; install libEGL or libOSMesa")
+from offscreen import VideoRecorder, setup_gl
 
 
 def main() -> None:
@@ -37,29 +24,14 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=480)
     args = parser.parse_args()
 
-    os.environ.setdefault("MUJOCO_GL", choose_gl_backend())
-    import imageio.v2 as imageio  # after MUJOCO_GL is set
-    import mujoco
-
-    from graspgraph.sim import SceneConfig, build_scene
+    setup_gl()
+    from graspgraph.sim import SceneConfig, build_scene  # after the GL backend is chosen
     from graspgraph.sim.robot import Robot
 
     scene = build_scene(SceneConfig(seed=args.seed, n_blocks=3, n_bowls=2))
-    renderer = mujoco.Renderer(scene.model, args.height, args.width)
-    camera = mujoco.MjvCamera()
-    camera.lookat[:] = (0.42, 0.0, 0.22)
-    camera.distance, camera.azimuth, camera.elevation = 1.65, 150.0, -28.0
-
-    frames = []
-    steps_per_frame = max(1, round(1.0 / (args.fps * scene.model.opt.timestep)))
     robot = Robot(scene)
-
-    def record() -> None:
-        if robot.total_steps % steps_per_frame == 0:
-            renderer.update_scene(scene.data, camera)
-            frames.append(renderer.render())
-
-    robot.on_step = record
+    video = VideoRecorder(robot, args.fps, args.width, args.height)
+    robot.on_step = video.record
     bowl = next(o.name for o in scene.objects if o.kind == "bowl")
     plan = [
         ("pick", robot.pick, "block_red"),
@@ -73,14 +45,8 @@ def main() -> None:
         result = primitive(arg)
         all_ok &= result.success
         print(f"{name}({arg or ''}): {'ok' if result.success else 'FAILED'} - {result.message} [{result.steps} steps]")
-    renderer.close()  # free the GL context now, not during interpreter shutdown
-
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    if args.out.suffix == ".gif":
-        imageio.mimsave(args.out, frames[::3], duration=3000 / args.fps, loop=0)  # a third of the frames keeps GIFs smaller
-    else:
-        imageio.mimsave(args.out, frames, fps=args.fps, macro_block_size=8)
-    print(f"saved {len(frames)} frames to {args.out} (MUJOCO_GL={os.environ['MUJOCO_GL']})")
+    video.save(args.out)
+    print(f"saved {len(video.frames)} frames to {args.out} (MUJOCO_GL={os.environ['MUJOCO_GL']})")
     sys.exit(0 if all_ok else 1)
 
 
